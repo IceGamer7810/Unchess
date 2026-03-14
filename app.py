@@ -1158,58 +1158,71 @@ class UnchessGame:
         header = tk.Frame(self.container, bg=BG_COLOR, padx=16, pady=12)
         header.pack(fill="x")
 
-        tk.Label(
+        self.mode_label = tk.Label(
             header,
-            text=f"Mod: {self.mode_title()}",
+            text=f"{self.app.ui_label('mode')}: {self.mode_title()}",
             font=("Segoe UI", 11, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
-        ).pack(side="left")
+        )
+        self.mode_label.pack(side="left")
 
-        tk.Button(
+        self.undo_button = tk.Button(
             header,
-            text="Undo",
+            text=self.app.ui_label("undo"),
             command=self.undo_move,
             padx=12,
-        ).pack(side="right", padx=(0, 8))
+        )
+        self.undo_button.pack(side="right", padx=(0, 8))
 
-        tk.Button(
+        self.redo_button = tk.Button(
             header,
-            text="Redo",
+            text=self.app.ui_label("redo"),
             command=self.redo_move,
             padx=12,
-        ).pack(side="right", padx=(0, 8))
+        )
+        self.redo_button.pack(side="right", padx=(0, 8))
 
-        tk.Button(
+        self.back_button = tk.Button(
             header,
-            text="Vissza a menübe",
+            text=self.app.ui_label("back_to_menu"),
             command=self.app.show_main_menu,
             padx=12,
-        ).pack(side="right")
+        )
+        self.back_button.pack(side="right")
 
         if self.mode_config["mode"] == "multiplayer":
             if self.app.is_admin:
-                tk.Button(
+                self.ban_button = tk.Button(
                     header,
-                    text="Ban",
+                    text=self.app.ui_label("ban"),
                     command=self.ban_opponent,
                     padx=12,
-                ).pack(side="right", padx=(0, 8))
-            tk.Button(
+                )
+                self.ban_button.pack(side="right", padx=(0, 8))
+            else:
+                self.ban_button = None
+            self.report_button = tk.Button(
                 header,
-                text="Report",
+                text=self.app.ui_label("report"),
                 command=self.report_opponent,
                 padx=12,
-            ).pack(side="right", padx=(0, 8))
+            )
+            self.report_button.pack(side="right", padx=(0, 8))
+        else:
+            self.ban_button = None
+            self.report_button = None
 
         if self.mode_config["mode"] == "bot_vs_bot":
             self.pause_button = tk.Button(
                 header,
-                text="Pause",
+                text=self.app.ui_label("pause"),
                 command=self.toggle_bot_pause,
                 padx=12,
             )
             self.pause_button.pack(side="right", padx=(0, 8))
+        else:
+            self.pause_button = None
 
         board_area = tk.Frame(self.container, bg=BG_COLOR)
         board_area.pack(fill="both", expand=True)
@@ -1231,23 +1244,23 @@ class UnchessGame:
         sidebar.grid(row=0, column=1, sticky="ns")
         sidebar.grid_propagate(False)
 
-        title = tk.Label(
+        self.sidebar_title_label = tk.Label(
             sidebar,
             text="Unchess",
             font=("Segoe UI", 24, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
         )
-        title.pack(anchor="w")
+        self.sidebar_title_label.pack(anchor="w")
 
-        subtitle = tk.Label(
+        self.sidebar_subtitle_label = tk.Label(
             sidebar,
-            text="Fordított irányítású sakk",
+            text=self.app.ui_label("game_subtitle"),
             font=("Segoe UI", 11),
             bg=BG_COLOR,
             fg="#5a5a5a",
         )
-        subtitle.pack(anchor="w", pady=(2, 16))
+        self.sidebar_subtitle_label.pack(anchor="w", pady=(2, 16))
 
         turn_label = tk.Label(
             sidebar,
@@ -1306,32 +1319,51 @@ class UnchessGame:
             return
         self.bot_paused = not self.bot_paused
         if self.pause_button is not None:
-            self.pause_button.configure(text="Resume" if self.bot_paused else "Pause")
+            self.pause_button.configure(text=self.app.ui_label("resume") if self.bot_paused else self.app.ui_label("pause"))
         if self.bot_paused:
             if not self.bot_thinking:
-                self.status_var.set("Bot párbaj szüneteltetve.")
+                self.status_var.set(self.app.ui_label("bot_duel_paused"))
                 self.draw()
         else:
             if self.pending_bot_move is not None and not self.animating and not self.game_over:
                 move = self.pending_bot_move
                 self.pending_bot_move = None
-                self.status_var.set("A bot gondolkodik...")
+                self.status_var.set(self.app.ui_label("bot_thinking"))
                 self.draw()
                 self.execute_move(move)
                 return
             if not self.bot_thinking and self.is_bot_turn() and not self.game_over:
-                self.status_var.set("A bot gondolkodik...")
+                self.status_var.set(self.app.ui_label("bot_thinking"))
                 self.draw()
                 self.root.after(80, self.run_bot_turn)
 
     def mode_title(self):
         if self.mode_config["mode"] == "singleplayer":
-            return "Singleplayer"
+            return self.app.ui_label("singleplayer")
         if self.mode_config["mode"] == "bot":
             return f"Bot - {self.mode_config['difficulty_label']}"
         if self.mode_config["mode"] == "bot_vs_bot":
-            return f"Bot vs Bot - {self.mode_config['white_label']} / {self.mode_config['black_label']}"
-        return "Multiplayer"
+            return f"{self.app.ui_label('bot_vs_bot')} - {self.mode_config['white_label']} / {self.mode_config['black_label']}"
+        return self.app.ui_label("multiplayer")
+
+    def color_label(self, color, upper=False):
+        key = f"{color}_{'upper' if upper else 'lower'}"
+        return self.app.ui_label(key)
+
+    def refresh_language(self):
+        self.mode_label.configure(text=f"{self.app.ui_label('mode')}: {self.mode_title()}")
+        self.undo_button.configure(text=self.app.ui_label("undo"))
+        self.redo_button.configure(text=self.app.ui_label("redo"))
+        self.back_button.configure(text=self.app.ui_label("back_to_menu"))
+        self.sidebar_subtitle_label.configure(text=self.app.ui_label("game_subtitle"))
+        if self.pause_button is not None:
+            self.pause_button.configure(text=self.app.ui_label("resume") if self.bot_paused else self.app.ui_label("pause"))
+        if self.report_button is not None:
+            self.report_button.configure(text=self.app.ui_label("report"))
+        if self.ban_button is not None:
+            self.ban_button.configure(text=self.app.ui_label("ban"))
+        self.update_sidebar()
+        self.draw()
 
     def snapshot_state(self):
         return {
@@ -1368,7 +1400,7 @@ class UnchessGame:
 
     def undo_move(self):
         if self.mode_config["mode"] == "multiplayer":
-            messagebox.showinfo("Undo", "A multiplayer undo kesobb kulon jovahagyassal lesz kezelve.")
+            messagebox.showinfo(self.app.ui_label("undo"), self.app.ui_label("multiplayer_undo_unavailable"))
             return
         if self.animating or self.bot_thinking or not self.undo_stack:
             return
@@ -1394,7 +1426,7 @@ class UnchessGame:
 
     def redo_move(self):
         if self.mode_config["mode"] == "multiplayer":
-            messagebox.showinfo("Redo", "A multiplayer redo jelenleg nincs tamogatva.")
+            messagebox.showinfo(self.app.ui_label("redo"), self.app.ui_label("multiplayer_redo_unavailable"))
             return
         if self.animating or self.bot_thinking or not self.redo_stack:
             return
@@ -1535,31 +1567,28 @@ class UnchessGame:
                 )
 
     def update_sidebar(self):
-        player_name = "FEHÉR" if self.current_actor() == "white" else "FEKETE"
-        moving_side = "fehér" if self.side_to_move == "white" else "fekete"
-        self.turn_var.set(f"Játékos: {player_name}\nMost mozog: {moving_side}")
+        player_name = self.color_label(self.current_actor(), upper=True)
+        moving_side = self.color_label(self.side_to_move, upper=False)
+        self.turn_var.set(f"{self.app.ui_label('player')}: {player_name}\n{self.app.ui_label('now_moving')}: {moving_side}")
         limit_text = "∞" if self.move_limit < 0 else str(self.move_limit)
         self.score_var.set(
-            f"Pontok\nFEHÉR: {self.score_white}\nFEKETE: {self.score_black}\nLépések: {self.move_count}/{limit_text}"
+            f"{self.app.ui_label('points')}\n{self.app.ui_label('white_upper')}: {self.score_white}\n{self.app.ui_label('black_upper')}: {self.score_black}\n{self.app.ui_label('moves')}: {self.move_count}/{limit_text}"
         )
-        self.info_var.set(
-            "Szabály: a mozgási rend sakk szerint normális, de mindig a másik játékos kattint a soron következő szín bábujaira. "
-            "A pont a leütő bábu tulajdonosáé."
-        )
+        self.info_var.set(self.app.ui_label("rule_text"))
         if self.mode_config["mode"] == "bot":
-            bot_name = "FEHÉR" if self.mode_config["bot_color"] == "white" else "FEKETE"
-            player_name = "FEHÉR" if self.mode_config["player_color"] == "white" else "FEKETE"
+            bot_name = self.color_label(self.mode_config["bot_color"], upper=True)
+            player_name = self.color_label(self.mode_config["player_color"], upper=True)
             self.info_var.set(
-                f"{self.info_var.get()}\nTe: {player_name}\nBot: {bot_name} ({self.mode_config['difficulty_label']})"
+                f"{self.info_var.get()}\n{self.app.ui_label('you')}: {player_name}\n{self.app.ui_label('bot')}: {bot_name} ({self.mode_config['difficulty_label']})"
             )
         if self.mode_config["mode"] == "bot_vs_bot":
             self.info_var.set(
-                f"{self.info_var.get()}\nFehér bot: {self.mode_config['white_label']}\nFekete bot: {self.mode_config['black_label']}"
+                f"{self.info_var.get()}\n{self.app.ui_label('white_bot')}: {self.mode_config['white_label']}\n{self.app.ui_label('black_bot')}: {self.mode_config['black_label']}"
             )
         if self.mode_config["mode"] == "multiplayer":
-            player_name = "FEHÉR" if self.mode_config["player_color"] == "white" else "FEKETE"
+            player_name = self.color_label(self.mode_config["player_color"], upper=True)
             room_code = self.mode_config.get("room_code", "??????")
-            self.info_var.set(f"{self.info_var.get()}\nTe: {player_name}\nSzoba: {room_code}")
+            self.info_var.set(f"{self.info_var.get()}\n{self.app.ui_label('you')}: {player_name}\n{self.app.ui_label('room')}: {room_code}")
 
     def current_actor(self):
         return opposite(self.side_to_move)
@@ -1624,13 +1653,13 @@ class UnchessGame:
             self.selected = (row, col)
             self.legal_moves = self.generate_legal_moves(row, col)
             if self.legal_moves:
-                self.status_var.set(f"Kijelolt babu: {PIECE_SYMBOLS[clicked_piece]}")
+                self.status_var.set(f"{self.app.ui_label('selected_piece')}: {PIECE_SYMBOLS[clicked_piece]}")
             else:
-                self.status_var.set("Ennek a bábunak most nincs szabályos lépése.")
+                self.status_var.set(self.app.ui_label("piece_no_legal"))
         else:
             self.selected = None
             self.legal_moves = []
-            self.status_var.set("Válassz egy mozgatható ellenfél-bábut.")
+            self.status_var.set(self.app.ui_label("pick_movable_enemy"))
 
         self.draw()
 
@@ -2239,6 +2268,8 @@ class UnchessApp:
         self.auth_password_var = None
         self.auth_remember_var = None
         self.reset_password_var = None
+        self.delete_account_password_var = None
+        self.delete_account_confirm_var = None
         self.pending_reset_username = None
         self.pending_reset_token = None
         self.ignore_next_disconnect = False
@@ -2261,6 +2292,7 @@ class UnchessApp:
         self.settings_move_limit_var = None
         self.settings_host_var = None
         self.settings_port_var = None
+        self.current_screen_refresh = None
         self.root.after(120, self.poll_network_events)
         self.show_main_menu()
 
@@ -2273,6 +2305,13 @@ class UnchessApp:
         if self.current_view is not None:
             self.current_view.destroy()
             self.current_view = None
+
+    def refresh_current_view_language(self):
+        if isinstance(self.current_view, UnchessGame):
+            self.current_view.refresh_language()
+            return
+        if self.current_screen_refresh is not None:
+            self.current_screen_refresh()
 
     def close_multiplayer_client(self):
         self.ignore_next_disconnect = True
@@ -2309,6 +2348,7 @@ class UnchessApp:
         self.root.after(120, self.poll_network_events)
 
     def show_main_menu(self):
+        self.current_screen_refresh = self.show_main_menu
         self.close_multiplayer_client()
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
@@ -2329,7 +2369,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Válassz játékmódot",
+            text=self.ui_label("choose_mode"),
             font=("Segoe UI", 13),
             bg=BG_COLOR,
             fg="#5a5a5a",
@@ -2338,20 +2378,21 @@ class UnchessApp:
         menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         menu_card.pack(anchor="center")
 
-        self.menu_button(menu_card, "Singleplayer", self.start_singleplayer).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "Multiplayer", self.show_multiplayer_entry).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "Bot", self.show_bot_menu).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "Bot vs Bot", self.show_bot_vs_bot_white_menu).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("singleplayer"), self.start_singleplayer).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("multiplayer"), self.show_multiplayer_entry).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("bot"), self.show_bot_menu).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("bot_vs_bot"), self.show_bot_vs_bot_white_menu).pack(fill="x", pady=6)
 
         tk.Label(
             frame,
-            text="Helyi hálón vagy külön TCP szerverrel használható.",
+            text=self.ui_label("local_or_tcp"),
             font=("Segoe UI", 10),
             bg=BG_COLOR,
             fg="#6a6a6a",
         ).pack(anchor="center", pady=(20, 0))
 
     def show_bot_menu(self):
+        self.current_screen_refresh = self.show_bot_menu
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
         frame.pack(fill="both", expand=True)
@@ -2363,7 +2404,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Bot nehézség",
+            text=self.ui_label("bot_difficulty"),
             font=("Segoe UI", 26, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -2371,7 +2412,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Válaszd ki a bot nehézségét. A bot a fekete játékost irányítja, így ő lép először a fehér bábukkal.",
+            text=self.ui_label("bot_difficulty_subtitle"),
             font=("Segoe UI", 11),
             bg=BG_COLOR,
             fg="#5a5a5a",
@@ -2381,7 +2422,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text=f"Auto role policy: {self.role_policy_label(self.auto_role_policy)}",
+            text=f"{self.ui_label('auto_role_policy')}: {self.role_policy_label(self.auto_role_policy)}",
             font=("Segoe UI", 10),
             bg=BG_COLOR,
             fg="#6a6a6a",
@@ -2391,10 +2432,10 @@ class UnchessApp:
         menu_card.pack(anchor="center")
 
         difficulties = [
-            ("easy", "Könnyű"),
-            ("normal", "Normal"),
-            ("hard", "Nehéz"),
-            ("unbeatable", "Verhetetlen"),
+            ("easy", self.ui_label("easy")),
+            ("normal", self.ui_label("normal")),
+            ("hard", self.ui_label("hard")),
+            ("unbeatable", self.ui_label("unbeatable")),
         ]
         for difficulty, label in difficulties:
             self.menu_button(
@@ -2403,9 +2444,10 @@ class UnchessApp:
                 lambda d=difficulty, l=label: self.show_bot_color_menu(d, l),
             ).pack(fill="x", pady=6)
 
-        tk.Button(frame, text="Vissza", command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
 
     def show_match_options(self, title, subtitle, start_callback, back_callback):
+        self.current_screen_refresh = lambda: self.show_match_options(title, subtitle, start_callback, back_callback)
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
         frame.pack(fill="both", expand=True)
@@ -2436,10 +2478,10 @@ class UnchessApp:
         card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         card.pack(anchor="center")
 
-        tk.Label(card, text="Lépéslimit", font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Label(card, text=self.ui_label("move_limit"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         tk.Label(
             card,
-            text="Adj meg számot. A -1 végtelen partit jelent.",
+            text=self.ui_label("move_limit_hint"),
             font=("Segoe UI", 10),
             bg=BG_COLOR,
             fg="#6a6a6a",
@@ -2456,12 +2498,12 @@ class UnchessApp:
             try:
                 move_limit = int(move_limit_var.get().strip())
             except ValueError:
-                messagebox.showerror("Indítás", "A lépéslimit csak egész szám lehet.")
+                messagebox.showerror(self.ui_label("start"), self.ui_label("launch_error"))
                 return
             start_callback(move_limit)
 
-        self.menu_button(card, "Start", begin).pack(fill="x", pady=6)
-        tk.Button(frame, text="Vissza", command=back_callback, padx=12).pack(pady=(18, 0))
+        self.menu_button(card, self.ui_label("start"), begin).pack(fill="x", pady=6)
+        tk.Button(frame, text=self.ui_label("back"), command=back_callback, padx=12).pack(pady=(18, 0))
 
     def show_bot_vs_bot_white_menu(self):
         self.pending_bvb = {}
@@ -2471,6 +2513,7 @@ class UnchessApp:
         self.show_bot_vs_bot_selector("black")
 
     def show_bot_vs_bot_selector(self, color):
+        self.current_screen_refresh = lambda c=color: self.show_bot_vs_bot_selector(c)
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
         frame.pack(fill="both", expand=True)
@@ -2480,10 +2523,10 @@ class UnchessApp:
         top_bar.pack(fill="x")
         self.mount_settings_button(top_bar)
 
-        side_label = "Fehér bot" if color == "white" else "Fekete bot"
+        side_label = self.ui_label("white_bot") if color == "white" else self.ui_label("black_bot")
         tk.Label(
             frame,
-            text=f"{side_label} nehézsége",
+            text=f"{side_label} {self.ui_label('difficulty_suffix')}",
             font=("Segoe UI", 26, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -2491,7 +2534,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Válassz nehézséget a következő botnak.",
+            text=self.ui_label("bot_select_subtitle"),
             font=("Segoe UI", 11),
             bg=BG_COLOR,
             fg="#5a5a5a",
@@ -2501,10 +2544,10 @@ class UnchessApp:
         menu_card.pack(anchor="center")
 
         difficulties = [
-            ("easy", "Könnyű"),
-            ("normal", "Normál"),
-            ("hard", "Nehéz"),
-            ("unbeatable", "Verhetetlen"),
+            ("easy", self.ui_label("easy")),
+            ("normal", self.ui_label("normal")),
+            ("hard", self.ui_label("hard")),
+            ("unbeatable", self.ui_label("unbeatable")),
         ]
         for difficulty, label in difficulties:
             self.menu_button(
@@ -2515,7 +2558,7 @@ class UnchessApp:
 
         tk.Button(
             frame,
-            text="Vissza",
+            text=self.ui_label("back"),
             command=self.show_main_menu if color == "white" else self.show_bot_vs_bot_white_menu,
             padx=12,
         ).pack(pady=(18, 0))
@@ -2526,18 +2569,19 @@ class UnchessApp:
             self.show_bot_vs_bot_black_menu()
         else:
             self.show_match_options(
-                "Bot vs Bot",
-                "Állítsd be a parti lépéslimitjét.",
+                self.ui_label("bot_vs_bot"),
+                self.ui_label("move_limit_hint"),
                 self.start_bot_vs_bot_game,
                 self.show_bot_vs_bot_black_menu,
             )
 
     def show_bot_color_menu(self, difficulty, label):
+        self.current_screen_refresh = lambda d=difficulty, l=label: self.show_bot_color_menu(d, l)
         self.pending_bot_difficulty = {"difficulty": difficulty, "label": label}
         if self.auto_role_policy != "ask":
             self.show_match_options(
-                "Bot meccs",
-                "Állítsd be a parti lépéslimitjét.",
+                self.ui_label("bot_match"),
+                self.ui_label("move_limit_hint"),
                 lambda move_limit: self.start_bot_game(self.resolve_player_color(self.auto_role_policy), move_limit),
                 self.show_bot_menu,
             )
@@ -2553,7 +2597,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Te színed",
+            text=self.ui_label("your_color"),
             font=("Segoe UI", 26, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -2561,7 +2605,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Mivel szeretnél játszani?",
+            text=self.ui_label("what_color"),
             font=("Segoe UI", 12),
             bg=BG_COLOR,
             fg="#5a5a5a",
@@ -2570,13 +2614,14 @@ class UnchessApp:
         menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         menu_card.pack(anchor="center")
 
-        self.menu_button(menu_card, "Fehér", lambda: self.show_bot_match_options("white")).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "Fekete", lambda: self.show_bot_match_options("black")).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "Random", self.start_random_bot_game).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("white"), lambda: self.show_bot_match_options("white")).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("black"), lambda: self.show_bot_match_options("black")).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("random"), self.start_random_bot_game).pack(fill="x", pady=6)
 
-        tk.Button(frame, text="Vissza", command=self.show_bot_menu, padx=12).pack(pady=(18, 0))
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_bot_menu, padx=12).pack(pady=(18, 0))
 
     def show_multiplayer_auth_menu(self):
+        self.current_screen_refresh = self.show_multiplayer_auth_menu
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
         frame.pack(fill="both", expand=True)
@@ -2586,8 +2631,8 @@ class UnchessApp:
         top_bar.pack(fill="x")
         self.mount_settings_button(top_bar)
 
-        tk.Label(frame, text="Multiplayer belépés", font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
-        tk.Label(frame, text=f"Szerver: {self.server_host}:{self.server_port}", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        tk.Label(frame, text=self.ui_label("multiplayer_login"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=f"{self.ui_label('server')}: {self.server_host}:{self.server_port}", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
 
         card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         card.pack(anchor="center")
@@ -2596,21 +2641,22 @@ class UnchessApp:
         self.auth_password_var = tk.StringVar()
         self.auth_remember_var = tk.BooleanVar(value=bool(self.remember_token))
 
-        tk.Label(card, text="Felhasználónév", font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Label(card, text=self.ui_label("username"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         tk.Entry(card, textvariable=self.auth_username_var, font=("Segoe UI", 12), width=28).pack(fill="x", pady=(4, 12))
-        tk.Label(card, text="Jelszó", font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Label(card, text=self.ui_label("password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         tk.Entry(card, textvariable=self.auth_password_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 10))
-        tk.Checkbutton(card, text="Maradjak bejelentkezve", variable=self.auth_remember_var, bg="#efe5d8", activebackground="#efe5d8").pack(anchor="w", pady=(0, 12))
+        tk.Checkbutton(card, text=self.ui_label("remember_me"), variable=self.auth_remember_var, bg="#efe5d8", activebackground="#efe5d8").pack(anchor="w", pady=(0, 12))
 
         row = tk.Frame(card, bg="#efe5d8")
         row.pack(fill="x")
-        self.menu_button(row, "Belépés", self.submit_login).pack(fill="x", pady=4)
-        self.menu_button(row, "Regisztráció", self.submit_register).pack(fill="x", pady=4)
+        self.menu_button(row, self.ui_label("login"), self.submit_login).pack(fill="x", pady=4)
+        self.menu_button(row, self.ui_label("register"), self.submit_register).pack(fill="x", pady=4)
         if self.remember_token:
-            self.menu_button(row, "Tárolt belépés", self.restore_saved_login).pack(fill="x", pady=4)
-        tk.Button(frame, text="Vissza", command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+            self.menu_button(row, self.ui_label("stored_login"), self.restore_saved_login).pack(fill="x", pady=4)
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
 
     def show_password_reset_menu(self, username, reset_token):
+        self.current_screen_refresh = lambda u=username, t=reset_token: self.show_password_reset_menu(u, t)
         self.pending_reset_username = username
         self.pending_reset_token = reset_token
         self.clear_view()
@@ -2618,14 +2664,40 @@ class UnchessApp:
         frame.pack(fill="both", expand=True)
         self.current_view = frame
 
-        tk.Label(frame, text="Jelszó reset", font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
-        tk.Label(frame, text=f"Fiók: {username}", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        tk.Label(frame, text=self.ui_label("password_reset"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=f"{self.ui_label('account')}: {username}", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
         self.reset_password_var = tk.StringVar()
         tk.Entry(frame, textvariable=self.reset_password_var, font=("Segoe UI", 14), show="*", width=24).pack(pady=(0, 18))
-        self.menu_button(frame, "Új jelszó mentése", self.submit_password_reset).pack(anchor="center")
-        tk.Button(frame, text="Vissza", command=self.show_multiplayer_auth_menu, padx=12).pack(pady=(18, 0))
+        self.menu_button(frame, self.ui_label("save_new_password"), self.submit_password_reset).pack(anchor="center")
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_auth_menu, padx=12).pack(pady=(18, 0))
+
+    def show_delete_account_menu(self):
+        if not self.user_name:
+            self.show_multiplayer_auth_menu()
+            return
+        self.current_screen_refresh = self.show_delete_account_menu
+        self.clear_view()
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
+        frame.pack(fill="both", expand=True)
+        self.current_view = frame
+
+        tk.Label(frame, text=self.ui_label("delete_account"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=self.ui_label("delete_account_warning"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a", wraplength=560, justify="center").pack(anchor="center", pady=(0, 18))
+        tk.Label(frame, text=f"{self.ui_label('account')}: {self.user_name}", font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(0, 18))
+
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+        self.delete_account_password_var = tk.StringVar()
+        self.delete_account_confirm_var = tk.StringVar()
+        tk.Label(card, text=self.ui_label("password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Entry(card, textvariable=self.delete_account_password_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 12))
+        tk.Label(card, text=self.ui_label("confirm_password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Entry(card, textvariable=self.delete_account_confirm_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 12))
+        self.menu_button(card, self.ui_label("delete_account"), self.submit_delete_account).pack(fill="x", pady=4)
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(pady=(18, 0))
 
     def show_multiplayer_placeholder(self):
+        self.current_screen_refresh = self.show_multiplayer_placeholder
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
         frame.pack(fill="both", expand=True)
@@ -2637,7 +2709,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Multiplayer",
+            text=self.ui_label("multiplayer"),
             font=("Segoe UI", 26, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -2645,7 +2717,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text=f"Szerver: {self.server_host}:{self.server_port}",
+            text=f"{self.ui_label('server')}: {self.server_host}:{self.server_port}",
             font=("Segoe UI", 11),
             bg=BG_COLOR,
             fg="#5a5a5a",
@@ -2655,25 +2727,26 @@ class UnchessApp:
 
         if self.user_name:
             suffix = " (admin)" if self.is_admin else ""
-            tk.Label(frame, text=f"Bejelentkezve: {self.user_name}{suffix}", font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(0, 18))
+            tk.Label(frame, text=f"{self.ui_label('logged_in')}: {self.user_name}{suffix}", font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(0, 18))
 
         menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         menu_card.pack(anchor="center")
 
-        self.menu_button(menu_card, "Új játék létrehozása", self.multiplayer_create_room).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "Csatlakozás meglévőhöz", self.show_multiplayer_join_menu).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("create_room"), self.multiplayer_create_room).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("join_room"), self.show_multiplayer_join_menu).pack(fill="x", pady=6)
+        self.menu_button(menu_card, self.ui_label("delete_account"), self.show_delete_account_menu).pack(fill="x", pady=6)
 
         tk.Label(
             frame,
-            text=f"Host auto role: {self.role_policy_label(self.auto_role_policy)}",
+            text=f"{self.ui_label('host_auto_role')}: {self.role_policy_label(self.auto_role_policy)}",
             font=("Segoe UI", 10),
             bg=BG_COLOR,
             fg="#6a6a6a",
         ).pack(anchor="center", pady=(18, 0))
 
         if self.user_name:
-            tk.Button(frame, text="Kijelentkezés", command=self.submit_logout, padx=12).pack(pady=(18, 0))
-        tk.Button(frame, text="Vissza", command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+            tk.Button(frame, text=self.ui_label("logout"), command=self.submit_logout, padx=12).pack(pady=(18, 0))
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
 
     def multiplayer_create_room(self):
         try:
@@ -2684,6 +2757,7 @@ class UnchessApp:
             messagebox.showerror("Multiplayer", f"Nem sikerult csatlakozni a szerverhez: {exc}")
 
     def show_multiplayer_join_menu(self):
+        self.current_screen_refresh = self.show_multiplayer_join_menu
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
         frame.pack(fill="both", expand=True)
@@ -2695,7 +2769,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Csatlakozás",
+            text=self.ui_label("join"),
             font=("Segoe UI", 26, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -2703,7 +2777,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="Add meg a játékkódot",
+            text=self.ui_label("enter_room_code"),
             font=("Segoe UI", 12),
             bg=BG_COLOR,
             fg="#5a5a5a",
@@ -2714,38 +2788,38 @@ class UnchessApp:
         entry.pack(pady=(0, 18))
         entry.focus_set()
 
-        self.menu_button(frame, "Csatlakozás", self.multiplayer_join_room).pack(anchor="center")
-        tk.Button(frame, text="Vissza", command=self.show_multiplayer_placeholder, padx=12).pack(pady=(18, 0))
+        self.menu_button(frame, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(pady=(18, 0))
 
     def multiplayer_join_room(self):
         code = (self.multiplayer_join_code_var.get() if self.multiplayer_join_code_var is not None else "").strip().upper()
         if not code:
-            messagebox.showerror("Multiplayer", "Adj meg egy játékkódot.")
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_room_code_error"))
             return
         try:
             self.ensure_multiplayer_connection()
             self.pending_multiplayer_action = {"kind": "join", "code": code}
             self.multiplayer_client.send({"type": "join_room", "room_code": code})
         except OSError as exc:
-            messagebox.showerror("Multiplayer", f"Nem sikerult csatlakozni a szerverhez: {exc}")
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
     def submit_register(self):
         username = (self.auth_username_var.get() if self.auth_username_var is not None else "").strip()
         password = self.auth_password_var.get() if self.auth_password_var is not None else ""
         if not username or not password:
-            messagebox.showerror("Multiplayer", "Adj meg felhasználónevet és jelszót.")
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_username_password"))
             return
         try:
             self.ensure_multiplayer_connection()
             self.multiplayer_client.send({"type": "register", "username": username, "password": password})
         except OSError as exc:
-            messagebox.showerror("Multiplayer", f"Nem sikerült csatlakozni a szerverhez: {exc}")
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
     def submit_login(self):
         username = (self.auth_username_var.get() if self.auth_username_var is not None else "").strip()
         password = self.auth_password_var.get() if self.auth_password_var is not None else ""
         if not username or not password:
-            messagebox.showerror("Multiplayer", "Adj meg felhasználónevet és jelszót.")
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_username_password"))
             return
         try:
             self.ensure_multiplayer_connection()
@@ -2758,17 +2832,17 @@ class UnchessApp:
                 }
             )
         except OSError as exc:
-            messagebox.showerror("Multiplayer", f"Nem sikerült csatlakozni a szerverhez: {exc}")
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
     def restore_saved_login(self):
         if not self.remember_token:
-            messagebox.showerror("Multiplayer", "Nincs mentett belépés.")
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_stored_login"))
             return
         try:
             self.ensure_multiplayer_connection()
             self.multiplayer_client.send({"type": "restore_session", "remember_token": self.remember_token})
         except OSError as exc:
-            messagebox.showerror("Multiplayer", f"Nem sikerült csatlakozni a szerverhez: {exc}")
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
     def submit_logout(self):
         if self.multiplayer_client is None or not self.multiplayer_client.connected:
@@ -2780,13 +2854,38 @@ class UnchessApp:
             return
         self.multiplayer_client.send({"type": "logout"})
 
+    def submit_delete_account(self):
+        password = self.delete_account_password_var.get() if self.delete_account_password_var is not None else ""
+        confirm_password = self.delete_account_confirm_var.get() if self.delete_account_confirm_var is not None else ""
+        if not password or not confirm_password:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("delete_account_fill_both"))
+            return
+        if password != confirm_password:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("passwords_do_not_match"))
+            return
+        if not messagebox.askyesno(self.ui_label("delete_account"), self.ui_label("delete_account_confirm_prompt")):
+            return
+        if self.multiplayer_client is None or not self.multiplayer_client.connected:
+            try:
+                self.ensure_multiplayer_connection()
+            except OSError as exc:
+                messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
+                return
+        self.multiplayer_client.send(
+            {
+                "type": "delete_account",
+                "password": password,
+                "confirm_password": confirm_password,
+            }
+        )
+
     def submit_password_reset(self):
         new_password = self.reset_password_var.get() if self.reset_password_var is not None else ""
         if not self.pending_reset_username or not self.pending_reset_token or not new_password:
-            messagebox.showerror("Multiplayer", "A reset adatok hiányoznak.")
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("reset_data_missing"))
             return
         if self.multiplayer_client is None:
-            messagebox.showerror("Multiplayer", "Nincs aktív kapcsolat a szerverhez.")
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
             return
         self.multiplayer_client.send(
             {
@@ -2800,18 +2899,19 @@ class UnchessApp:
     def report_opponent(self):
         if self.mode_config["mode"] != "multiplayer" or self.network_client is None:
             return
-        if not messagebox.askyesno("Report", "Biztosan reportolni szeretnéd az ellenfelet?"):
+        if not messagebox.askyesno(self.ui_label("report"), self.ui_label("confirm_report")):
             return
         self.network_client.send({"type": "report_player"})
 
     def ban_opponent(self):
         if self.mode_config["mode"] != "multiplayer" or self.network_client is None or not self.app.is_admin:
             return
-        if not messagebox.askyesno("Ban", "Biztosan tiltani szeretnéd az ellenfelet?"):
+        if not messagebox.askyesno(self.ui_label("ban"), self.ui_label("confirm_ban")):
             return
         self.network_client.send({"type": "ban_player"})
 
     def show_multiplayer_waiting_room(self, host, code="......"):
+        self.current_screen_refresh = lambda h=host, c=code: self.show_multiplayer_waiting_room(h, c)
         self.multiplayer_is_host = host
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
@@ -2823,10 +2923,10 @@ class UnchessApp:
         self.mount_settings_button(top_bar)
 
         self.multiplayer_room_var = tk.StringVar(value=code)
-        self.multiplayer_status_var = tk.StringVar(value="Várakozás ellenfélre...")
+        self.multiplayer_status_var = tk.StringVar(value=self.ui_label("waiting_opponent"))
 
-        tk.Label(frame, text="Multiplayer lobby", font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
-        tk.Label(frame, text="Játékkód", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center")
+        tk.Label(frame, text=self.ui_label("multiplayer_lobby"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=self.ui_label("room_code"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center")
         tk.Label(frame, textvariable=self.multiplayer_room_var, font=("Consolas", 24, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(0, 18))
         tk.Label(frame, textvariable=self.multiplayer_status_var, font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
 
@@ -2835,30 +2935,32 @@ class UnchessApp:
         if host:
             tk.Label(
                 self.multiplayer_host_controls,
-                text=f"Host auto role: {self.role_policy_label(self.auto_role_policy)}",
+                text=f"{self.ui_label('host_auto_role')}: {self.role_policy_label(self.auto_role_policy)}",
                 font=("Segoe UI", 10),
                 bg=BG_COLOR,
                 fg="#6a6a6a",
             ).pack()
 
-        tk.Button(frame, text="Mégse", command=self.cancel_multiplayer, padx=12).pack(pady=(18, 0))
+        tk.Button(frame, text=self.ui_label("cancel"), command=self.cancel_multiplayer, padx=12).pack(pady=(18, 0))
 
     def show_multiplayer_role_choice(self):
         if self.multiplayer_host_controls is None:
             return
+        code = self.multiplayer_room_var.get() if self.multiplayer_room_var is not None else "......"
+        self.current_screen_refresh = lambda h=self.multiplayer_is_host, c=code: (self.show_multiplayer_waiting_room(h, c), self.show_multiplayer_role_choice())
         for child in self.multiplayer_host_controls.winfo_children():
             child.destroy()
         self.multiplayer_move_limit_var = tk.StringVar(value=str(self.default_move_limit))
         tk.Label(
             self.multiplayer_host_controls,
-            text="Az ellenfél megérkezett. Állítsd be a parti indulását:",
+            text=self.ui_label("role_setup"),
             font=("Segoe UI", 10, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
         ).pack(pady=(0, 8))
         tk.Label(
             self.multiplayer_host_controls,
-            text="Lépéslimit (-1 = végtelen)",
+            text=self.ui_label("move_limit_short"),
             font=("Segoe UI", 10),
             bg=BG_COLOR,
             fg="#6a6a6a",
@@ -2873,27 +2975,27 @@ class UnchessApp:
         row = tk.Frame(self.multiplayer_host_controls, bg=BG_COLOR)
         row.pack()
         if self.auto_role_policy == "ask":
-            tk.Button(row, text="Fehér", command=lambda: self.send_role_choice("white"), padx=12).pack(side="left", padx=4)
-            tk.Button(row, text="Fekete", command=lambda: self.send_role_choice("black"), padx=12).pack(side="left", padx=4)
-            tk.Button(row, text="Random", command=lambda: self.send_role_choice("random"), padx=12).pack(side="left", padx=4)
+            tk.Button(row, text=self.ui_label("white"), command=lambda: self.send_role_choice("white"), padx=12).pack(side="left", padx=4)
+            tk.Button(row, text=self.ui_label("black"), command=lambda: self.send_role_choice("black"), padx=12).pack(side="left", padx=4)
+            tk.Button(row, text=self.ui_label("random"), command=lambda: self.send_role_choice("random"), padx=12).pack(side="left", padx=4)
         else:
             tk.Label(
                 row,
-                text=f"Szerep: {self.role_policy_label(self.auto_role_policy)}",
+                text=f"{self.ui_label('role')}: {self.role_policy_label(self.auto_role_policy)}",
                 font=("Segoe UI", 10),
                 bg=BG_COLOR,
                 fg=TEXT_COLOR,
             ).pack(side="left", padx=(0, 8))
-            tk.Button(row, text="Start", command=lambda: self.send_role_choice(self.auto_role_policy), padx=12).pack(side="left", padx=4)
+            tk.Button(row, text=self.ui_label("start"), command=lambda: self.send_role_choice(self.auto_role_policy), padx=12).pack(side="left", padx=4)
 
     def send_role_choice(self, choice):
         if self.multiplayer_client is not None:
             try:
                 move_limit = int((self.multiplayer_move_limit_var.get() if self.multiplayer_move_limit_var is not None else str(self.default_move_limit)).strip())
             except ValueError:
-                messagebox.showerror("Multiplayer", "A lépéslimit csak egész szám lehet.")
+                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("launch_error"))
                 return
-            self.multiplayer_status_var.set("Szerepkiosztás elküldve...")
+            self.multiplayer_status_var.set(self.ui_label("role_sent"))
             self.multiplayer_client.send({"type": "choose_role", "preference": choice, "move_limit": move_limit})
 
     def cancel_multiplayer(self):
@@ -2902,8 +3004,8 @@ class UnchessApp:
 
     def start_singleplayer(self):
         self.show_match_options(
-            "Singleplayer",
-            "Állítsd be a parti lépéslimitjét.",
+            self.ui_label("singleplayer"),
+            self.ui_label("match_options_subtitle"),
             self.start_singleplayer_game,
             self.show_main_menu,
         )
@@ -2916,8 +3018,8 @@ class UnchessApp:
 
     def show_bot_match_options(self, player_color):
         self.show_match_options(
-            "Bot meccs",
-            "Állítsd be a parti lépéslimitjét.",
+            self.ui_label("bot_match"),
+            self.ui_label("match_options_subtitle"),
             lambda move_limit: self.start_bot_game(player_color, move_limit),
             lambda: self.show_bot_color_menu(self.pending_bot_difficulty["difficulty"], self.pending_bot_difficulty["label"]),
         )
@@ -2971,6 +3073,7 @@ class UnchessApp:
     def start_game(self, mode_config):
         self.clear_view()
         self.current_view = UnchessGame(self, self.root, mode_config)
+        self.current_screen_refresh = self.current_view.refresh_language
 
     def handle_network_event(self, event):
         event_type = event.get("type")
@@ -3018,6 +3121,16 @@ class UnchessApp:
             self.is_admin = False
             self.remember_token = ""
             self.save_settings()
+            self.show_multiplayer_auth_menu()
+            return
+        if event_type == "delete_account_success":
+            deleted_username = event.get("username", self.user_name)
+            self.user_name = ""
+            self.is_admin = False
+            self.remember_token = ""
+            self.save_settings()
+            self.close_multiplayer_client()
+            messagebox.showinfo(self.ui_label("multiplayer"), f"{self.ui_label('delete_account_success')}: {deleted_username}")
             self.show_multiplayer_auth_menu()
             return
         if event_type == "force_logout":
@@ -3076,14 +3189,14 @@ class UnchessApp:
             self.pending_multiplayer_action = None
             self.show_multiplayer_waiting_room(host=False, code=event["room"]["room_code"])
             if self.multiplayer_status_var is not None:
-                self.multiplayer_status_var.set("Csatlakozva. Várakozás a hostra...")
+                self.multiplayer_status_var.set(self.ui_label("waiting_opponent"))
             return
         if event_type == "room_ready_for_role_choice":
             self.multiplayer_room = event["room"]
             if self.multiplayer_room_var is not None:
                 self.multiplayer_room_var.set(event["room"]["room_code"])
             if self.multiplayer_status_var is not None:
-                self.multiplayer_status_var.set("Az ellenfél megérkezett.")
+                self.multiplayer_status_var.set(self.ui_label("opponent_arrived"))
             if self.multiplayer_is_host:
                 self.show_multiplayer_role_choice()
             return
@@ -3352,7 +3465,7 @@ class UnchessApp:
         panel = self.settings_scrollable
         tk.Label(
             panel,
-            text="Beállítások",
+            text=self.settings_ui_label("title"),
             font=("Segoe UI", 12, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -3360,7 +3473,7 @@ class UnchessApp:
 
         tk.Label(
             panel,
-            text="Language",
+            text=self.settings_ui_label("language"),
             font=("Segoe UI", 11, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -3375,6 +3488,7 @@ class UnchessApp:
             self.language = language_reverse[language_var.get()]
             self.save_settings()
             self.close_settings_panel()
+            self.refresh_current_view_language()
             self.open_settings_panel()
 
         language_combo = ttk.Combobox(
@@ -3388,7 +3502,7 @@ class UnchessApp:
 
         tk.Label(
             panel,
-            text="Auto role policy",
+            text=self.settings_ui_label("auto_role_policy"),
             font=("Segoe UI", 11, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -3413,7 +3527,7 @@ class UnchessApp:
 
         tk.Label(
             panel,
-            text="Bot tempó",
+            text=self.settings_ui_label("bot_tempo"),
             font=("Segoe UI", 11, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -3438,7 +3552,7 @@ class UnchessApp:
 
         tk.Label(
             panel,
-            text="Alap lépéslimit",
+            text=self.settings_ui_label("default_move_limit"),
             font=("Segoe UI", 11, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
@@ -3446,7 +3560,7 @@ class UnchessApp:
 
         tk.Label(
             panel,
-            text="Negatív szám = végtelen",
+            text=self.settings_ui_label("negative_is_infinite"),
             font=("Segoe UI", 10),
             bg="#efe5d8",
             fg="#6a6a6a",
@@ -3473,7 +3587,7 @@ class UnchessApp:
 
         tk.Label(
             panel,
-            text="Multiplayer szerver",
+            text=self.settings_ui_label("multiplayer_server"),
             font=("Segoe UI", 11, "bold"),
             bg="#efe5d8",
             fg=TEXT_COLOR,
@@ -3481,7 +3595,7 @@ class UnchessApp:
 
         host_row = tk.Frame(panel, bg=BG_COLOR)
         host_row.pack(fill="x", pady=(0, 6))
-        tk.Label(host_row, text="Host", width=8, anchor="w", bg=BG_COLOR, fg=TEXT_COLOR).pack(side="left")
+        tk.Label(host_row, text=self.settings_ui_label("host"), width=8, anchor="w", bg=BG_COLOR, fg=TEXT_COLOR).pack(side="left")
         host_var = tk.StringVar(value=self.server_host)
         self.settings_host_var = host_var
         host_entry = tk.Entry(host_row, textvariable=host_var)
@@ -3489,7 +3603,7 @@ class UnchessApp:
 
         port_row = tk.Frame(panel, bg=BG_COLOR)
         port_row.pack(fill="x", pady=(0, 6))
-        tk.Label(port_row, text="Port", width=8, anchor="w", bg=BG_COLOR, fg=TEXT_COLOR).pack(side="left")
+        tk.Label(port_row, text=self.settings_ui_label("port"), width=8, anchor="w", bg=BG_COLOR, fg=TEXT_COLOR).pack(side="left")
         port_var = tk.StringVar(value=str(self.server_port))
         self.settings_port_var = port_var
         port_entry = tk.Entry(port_row, textvariable=port_var)
@@ -3509,7 +3623,7 @@ class UnchessApp:
         port_entry.bind("<FocusOut>", save_server_target)
         port_entry.bind("<Return>", save_server_target)
 
-        tk.Button(panel, text="Bezárás", command=self.close_settings_panel, padx=12).pack(anchor="e", pady=(14, 0))
+        tk.Button(panel, text=self.settings_ui_label("close"), command=self.close_settings_panel, padx=12).pack(anchor="e", pady=(14, 0))
         self.settings_panel.update_idletasks()
         panel_width = self.settings_panel.winfo_reqwidth()
         panel_height = self.settings_panel.winfo_reqheight()
@@ -3547,23 +3661,239 @@ class UnchessApp:
             }
         )
 
-    def role_policy_label(self, policy):
+    def settings_ui_label(self, key):
         labels = {
-            "ask": "Mindig kérdezzen",
-            "white": "Mindig Fehér",
-            "black": "Mindig Fekete",
-            "random": "Mindig Random",
+            "hu": {
+                "title": "Beállítások",
+                "language": "Nyelv",
+                "auto_role_policy": "Automatikus szerepválasztás",
+                "bot_tempo": "Bot tempó",
+                "default_move_limit": "Alap lépéslimit",
+                "negative_is_infinite": "Negatív szám = végtelen",
+                "multiplayer_server": "Multiplayer szerver",
+                "host": "Host",
+                "port": "Port",
+                "close": "Bezárás",
+            },
+            "en": {
+                "title": "Settings",
+                "language": "Language",
+                "auto_role_policy": "Auto role policy",
+                "bot_tempo": "Bot tempo",
+                "default_move_limit": "Default move limit",
+                "negative_is_infinite": "Negative number = infinite",
+                "multiplayer_server": "Multiplayer server",
+                "host": "Host",
+                "port": "Port",
+                "close": "Close",
+            },
         }
-        return labels[policy]
+        lang = self.language if self.language in labels else "en"
+        return labels[lang][key]
 
-    def bot_tempo_label(self, tempo):
+    def ui_label(self, key):
         labels = {
-            "slow": "Lassú",
-            "normal": "Normál",
-            "fast": "Gyors",
-            "instant": "Instant",
+            "hu": {
+                "choose_mode": "Válassz játékmódot",
+                "singleplayer": "Singleplayer",
+                "multiplayer": "Multiplayer",
+                "bot": "Bot",
+                "bot_vs_bot": "Bot vs Bot",
+                "mode": "Mód",
+                "undo": "Undo",
+                "redo": "Redo",
+                "back_to_menu": "Vissza a menübe",
+                "report": "Report",
+                "ban": "Ban",
+                "pause": "Pause",
+                "resume": "Resume",
+                "game_subtitle": "Fordított irányítású sakk",
+                "local_or_tcp": "Helyi hálón vagy külön TCP szerverrel használható.",
+                "back": "Vissza",
+                "start": "Start",
+                "bot_difficulty": "Bot nehézség",
+                "bot_difficulty_subtitle": "Válaszd ki a bot nehézségét. A bot a fekete játékost irányítja, így ő lép először a fehér bábukkal.",
+                "easy": "Könnyű",
+                "normal": "Normál",
+                "hard": "Nehéz",
+                "unbeatable": "Verhetetlen",
+                "move_limit": "Lépéslimit",
+                "move_limit_hint": "Adj meg számot. A -1 végtelen partit jelent.",
+                "launch_error": "A lépéslimit csak egész szám lehet.",
+                "white_bot": "Fehér bot",
+                "black_bot": "Fekete bot",
+                "bot_select_subtitle": "Válassz nehézséget a következő botnak.",
+                "bot_match": "Bot meccs",
+                "your_color": "Te színed",
+                "what_color": "Mivel szeretnél játszani?",
+                "white": "Fehér",
+                "black": "Fekete",
+                "random": "Random",
+                "white_upper": "FEHÉR",
+                "black_upper": "FEKETE",
+                "white_lower": "fehér",
+                "black_lower": "fekete",
+                "multiplayer_login": "Multiplayer belépés",
+                "server": "Szerver",
+                "username": "Felhasználónév",
+                "password": "Jelszó",
+                "remember_me": "Maradjak bejelentkezve",
+                "login": "Belépés",
+                "register": "Regisztráció",
+                "stored_login": "Tárolt belépés",
+                "password_reset": "Jelszó reset",
+                "account": "Fiók",
+                "save_new_password": "Új jelszó mentése",
+                "logged_in": "Bejelentkezve",
+                "create_room": "Új játék létrehozása",
+                "join_room": "Csatlakozás meglévőhöz",
+                "logout": "Kijelentkezés",
+                "delete_account": "Fiók törlése",
+                "delete_account_warning": "Ez végleg törli a fiókodat. Írd be kétszer a jelenlegi jelszavad a megerősítéshez.",
+                "confirm_password": "Jelszó újra",
+                "join": "Csatlakozás",
+                "enter_room_code": "Add meg a játékkódot",
+                "multiplayer_lobby": "Multiplayer lobby",
+                "room_code": "Játékkód",
+                "waiting_opponent": "Várakozás ellenfélre...",
+                "cancel": "Mégse",
+                "host_auto_role": "Host auto role",
+                "opponent_arrived": "Az ellenfél megérkezett.",
+                "role_setup": "Az ellenfél megérkezett. Állítsd be a parti indulását:",
+                "move_limit_short": "Lépéslimit (-1 = végtelen)",
+                "role": "Szerep",
+                "role_sent": "Szerepkiosztás elküldve...",
+                "difficulty_suffix": "nehézsége",
+                "enter_room_code_error": "Adj meg egy játékkódot.",
+                "server_connect_error": "Nem sikerült csatlakozni a szerverhez",
+                "enter_username_password": "Adj meg felhasználónevet és jelszót.",
+                "no_stored_login": "Nincs mentett belépés.",
+                "reset_data_missing": "A reset adatok hiányoznak.",
+                "no_active_server_connection": "Nincs aktív kapcsolat a szerverhez.",
+                "confirm_report": "Biztosan reportolni szeretnéd az ellenfelet?",
+                "confirm_ban": "Biztosan tiltani szeretnéd az ellenfelet?",
+                "match_options_subtitle": "Állítsd be a parti lépéslimitjét.",
+                "player": "Játékos",
+                "now_moving": "Most mozog",
+                "points": "Pontok",
+                "moves": "Lépések",
+                "rule_text": "Szabály: a mozgási rend sakk szerint normális, de mindig a másik játékos kattint a soron következő szín bábujaira. A pont a leütő bábu tulajdonosáé.",
+                "you": "Te",
+                "room": "Szoba",
+                "selected_piece": "Kijelölt bábu",
+                "piece_no_legal": "Ennek a bábunak most nincs szabályos lépése.",
+                "pick_movable_enemy": "Válassz egy mozgatható ellenfél-bábut.",
+                "bot_thinking": "A bot gondolkodik...",
+                "bot_duel_paused": "Bot párbaj szüneteltetve.",
+                "multiplayer_undo_unavailable": "A multiplayer undo később külön jóváhagyással lesz kezelve.",
+                "multiplayer_redo_unavailable": "A multiplayer redo jelenleg nincs támogatva.",
+                "delete_account_fill_both": "Mindkét jelszómezőt ki kell tölteni.",
+                "passwords_do_not_match": "A két jelszó nem egyezik.",
+                "delete_account_confirm_prompt": "Biztosan végleg törölni szeretnéd a fiókodat?",
+                "delete_account_success": "Fiók törölve",
+            },
+            "en": {
+                "choose_mode": "Choose game mode",
+                "singleplayer": "Singleplayer",
+                "multiplayer": "Multiplayer",
+                "bot": "Bot",
+                "bot_vs_bot": "Bot vs Bot",
+                "mode": "Mode",
+                "undo": "Undo",
+                "redo": "Redo",
+                "back_to_menu": "Back to menu",
+                "report": "Report",
+                "ban": "Ban",
+                "pause": "Pause",
+                "resume": "Resume",
+                "game_subtitle": "Reverse-control chess",
+                "local_or_tcp": "Usable on local network or through a dedicated TCP server.",
+                "back": "Back",
+                "start": "Start",
+                "bot_difficulty": "Bot difficulty",
+                "bot_difficulty_subtitle": "Choose the bot difficulty. The bot controls the black player, so it moves first with the white pieces.",
+                "easy": "Easy",
+                "normal": "Normal",
+                "hard": "Hard",
+                "unbeatable": "Unbeatable",
+                "move_limit": "Move limit",
+                "move_limit_hint": "Enter a number. -1 means an infinite match.",
+                "launch_error": "Move limit must be an integer.",
+                "white_bot": "White bot",
+                "black_bot": "Black bot",
+                "bot_select_subtitle": "Choose a difficulty for the next bot.",
+                "bot_match": "Bot match",
+                "your_color": "Your color",
+                "what_color": "Which side do you want to play?",
+                "white": "White",
+                "black": "Black",
+                "random": "Random",
+                "white_upper": "WHITE",
+                "black_upper": "BLACK",
+                "white_lower": "white",
+                "black_lower": "black",
+                "multiplayer_login": "Multiplayer login",
+                "server": "Server",
+                "username": "Username",
+                "password": "Password",
+                "remember_me": "Stay signed in",
+                "login": "Login",
+                "register": "Register",
+                "stored_login": "Stored login",
+                "password_reset": "Password reset",
+                "account": "Account",
+                "save_new_password": "Save new password",
+                "logged_in": "Logged in",
+                "create_room": "Create new game",
+                "join_room": "Join existing room",
+                "logout": "Logout",
+                "delete_account": "Delete account",
+                "delete_account_warning": "This permanently deletes your account. Enter your current password twice to confirm.",
+                "confirm_password": "Confirm password",
+                "join": "Join",
+                "enter_room_code": "Enter the room code",
+                "multiplayer_lobby": "Multiplayer lobby",
+                "room_code": "Room code",
+                "waiting_opponent": "Waiting for opponent...",
+                "cancel": "Cancel",
+                "host_auto_role": "Host auto role",
+                "opponent_arrived": "Opponent arrived.",
+                "role_setup": "Your opponent arrived. Configure the match start:",
+                "move_limit_short": "Move limit (-1 = infinite)",
+                "role": "Role",
+                "role_sent": "Role selection sent...",
+                "difficulty_suffix": "difficulty",
+                "enter_room_code_error": "Enter a room code.",
+                "server_connect_error": "Could not connect to the server",
+                "enter_username_password": "Enter a username and password.",
+                "no_stored_login": "No stored login found.",
+                "reset_data_missing": "Reset data is missing.",
+                "no_active_server_connection": "There is no active server connection.",
+                "confirm_report": "Are you sure you want to report your opponent?",
+                "confirm_ban": "Are you sure you want to ban your opponent?",
+                "match_options_subtitle": "Set the match move limit.",
+                "player": "Player",
+                "now_moving": "Now moving",
+                "points": "Points",
+                "moves": "Moves",
+                "rule_text": "Rule: movement order is normal chess order, but the other player always clicks the side-to-move pieces. Points belong to the owner of the captured piece.",
+                "you": "You",
+                "room": "Room",
+                "selected_piece": "Selected piece",
+                "piece_no_legal": "This piece currently has no legal move.",
+                "pick_movable_enemy": "Choose a movable opponent piece.",
+                "bot_thinking": "The bot is thinking...",
+                "bot_duel_paused": "Bot duel paused.",
+                "multiplayer_undo_unavailable": "Multiplayer undo will be handled later with separate approval.",
+                "multiplayer_redo_unavailable": "Multiplayer redo is currently not supported.",
+                "delete_account_fill_both": "Both password fields are required.",
+                "passwords_do_not_match": "The two passwords do not match.",
+                "delete_account_confirm_prompt": "Are you sure you want to permanently delete your account?",
+                "delete_account_success": "Account deleted",
+            },
         }
-        return labels[tempo]
+        lang = self.language if self.language in labels else "en"
+        return labels[lang][key]
 
     def role_policy_label(self, policy):
         labels = {
