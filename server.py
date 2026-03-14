@@ -1,14 +1,41 @@
 import json
 import logging
+from pathlib import Path
 import random
 import socketserver
 import string
 import threading
+import tomllib
 
 
-HOST = "0.0.0.0"
-PORT = 7777
+SERVER_CONFIG_PATH = Path(".server.toml")
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 7777
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
+
+
+def write_server_config(host, port):
+    content = f'[server]\nhost = "{host}"\nport = {int(port)}\n'
+    SERVER_CONFIG_PATH.write_text(content, encoding="utf-8")
+
+
+def load_server_config():
+    if not SERVER_CONFIG_PATH.exists():
+        write_server_config(DEFAULT_HOST, DEFAULT_PORT)
+        return DEFAULT_HOST, DEFAULT_PORT
+    try:
+        data = tomllib.loads(SERVER_CONFIG_PATH.read_text(encoding="utf-8"))
+        server = data.get("server", {})
+        host = str(server.get("host", DEFAULT_HOST))
+        port = int(server.get("port", DEFAULT_PORT))
+    except Exception:
+        write_server_config(DEFAULT_HOST, DEFAULT_PORT)
+        return DEFAULT_HOST, DEFAULT_PORT
+    write_server_config(host, port)
+    return host, port
+
+
+HOST, PORT = load_server_config()
 
 
 def generate_room_code(length=6):
@@ -24,6 +51,7 @@ class Room:
         self.role_assignment = None
         self.side_to_move = "white"
         self.started = False
+        self.move_limit = -1
 
     def to_payload(self):
         return {
@@ -31,6 +59,7 @@ class Room:
             "host_connected": self.host is not None,
             "guest_connected": self.guest is not None,
             "role_assignment": self.role_assignment,
+            "move_limit": self.move_limit,
         }
 
 
@@ -99,7 +128,25 @@ class UnchessTCPServer(socketserver.ThreadingTCPServer):
                 return
 
             logging.info("Player left room %s: %s", room_code, name)
-            self.broadcast_room(room, {"type": "player_left", "room": room.to_payload()})
+            payload = {
+                "type": "player_left",
+                "room": room.to_payload(),
+                "player_name": name,
+                "game_was_started": room.started,
+            }
+            remaining_session = room.host if room.host is not None else room.guest
+            if room.started and remaining_session is not None:
+                winner_role = "host" if room.host is not None else "guest"
+                winner_name = self.session_names.get(remaining_session, "Unknown")
+                payload["winner_role"] = winner_role
+                payload["winner_name"] = winner_name
+            self.broadcast_room(room, payload)
+            if room.host is not None:
+                self.session_rooms.pop(room.host, None)
+            if room.guest is not None:
+                self.session_rooms.pop(room.guest, None)
+            self.rooms.pop(room_code, None)
+            logging.info("Room %s closed after disconnect", room_code)
 
     def handle_message(self, session, message):
         msg_type = message.get("type")
@@ -167,6 +214,10 @@ class UnchessTCPServer(socketserver.ThreadingTCPServer):
                 session.send({"type": "error", "message": "Cannot choose role before guest joins"})
                 return
             preference = message.get("preference", "random")
+            try:
+                room.move_limit = int(message.get("move_limit", -1))
+            except (TypeError, ValueError):
+                room.move_limit = -1
             room.role_assignment = self.resolve_role_assignment(preference)
             room.started = True
             room.side_to_move = "white"

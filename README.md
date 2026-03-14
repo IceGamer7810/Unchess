@@ -1,174 +1,144 @@
 # Unchess
 
-Az Unchess egy Pythonban írt sakk-prototípus `tkinter` GUI-val, amely a klasszikus sakk egyik alapfeltevését fordítja meg: a játékosok nem a saját, hanem az ellenfél bábuit mozgatják.
+Az Unchess egy Pythonos, `tkinter`-es sakkprototípus, ahol a tábla és a bábumozgás sakk, de a vezérlés fordított: mindig az ellenfél bábuit mozgatod.
 
-## Miről szól a játék?
+## Alapötlet
 
-A szerepek és a célok ugyanazok maradnak, mint sakkban:
+- A fehér játékos a fehérrel van, a fekete játékos a feketével.
+- A cél továbbra is az ellenfél királyának mattot adni.
+- Amikor `white` van soron, a fekete játékos lép a fehér bábukkal.
+- Amikor `black` van soron, a fehér játékos lép a fekete bábukkal.
 
-- a fehér játékos a fehérrel van
-- a fekete játékos a feketével van
-- a cél az ellenfél királyának mattot adni
-
-A csavar az, hogy:
-
-- amikor fehér van soron, a fekete játékos lép a fehér bábukkal
-- amikor fekete van soron, a fehér játékos lép a fekete bábukkal
-
-Vagyis a soron következő szín bábui mozognak, de mindig a másik játékos kattint rájuk.
-
-## Alapszabályok
-
-- A bábu-mozgások a normál sakk szabályait követik.
-- A saját színű bábu leütése nem szabályos.
-- A sakkot kötelező megszüntetni.
-- A királyok nem állhatnak egymás mellett.
-- Gyalogátváltozás van.
+Az Unchess lényege nem a sima támadás, hanem a kényszerhelyzet-manipuláció: olyan állásokat kell építeni, ahol az ellenfél rossz válaszokra kényszerül.
 
 ## Pontozás
 
-A matt mellett pontozás is van. Minden leütött bábu pontot ér.
+Minden leütött bábu pontot ér:
 
-- gyalog: 1 pont
-- huszár: 3 pont
-- futó: 3 pont
-- bástya: 5 pont
-- vezér: 9 pont
+- gyalog: 1
+- huszár: 3
+- futó: 3
+- bástya: 5
+- vezér: 9
 
-A pont mindig annak a játékosnak jár, akinek a színe ütött, függetlenül attól, hogy fizikailag ki kattintott a lépésre.
-
-Ez azért fontos, mert az Unchess taktikai lényege sokszor nem a közvetlen támadás, hanem az, hogy az ellenfelet kellemetlen, kényszerített válaszokra vidd rá.
-
-## Az Unchess lényege
-
-A játék központi ötlete a manipulált kényszerhelyzet.
-
-Tipikus helyzet:
-
-1. Olyan lépést teszel az ellenfél bábujával, amely sakkhelyzetet vagy más kényszerhelyzetet hoz létre.
-2. Az ellenfélnek erre kötelező reagálnia.
-3. Mivel ő sem a saját bábuit mozgatja, gyakran rossz, pontot adó vagy pozíciót rontó válaszok maradnak neki.
-
-Az erős játék tehát nem abból áll, hogy „összevissza támadsz”, hanem abból, hogy olyan állást építesz, ahol az ellenfél kötelező válasza neked kedvez.
-
-## Játékvégi feltételek
-
-A játszma kétféleképpen érhet véget:
-
-- mattal
-- lépéslimittel
-
-Ha a lépéslimit letelik matt nélkül, a pontszám dönt.
+A pont annak a játékosnak jár, akinek a színe ütött, nem annak, aki fizikailag kattintott.
 
 ## Jelenlegi funkciók
 
-A jelenlegi prototípus tudja:
-
-- a teljes grafikus sakktáblát `Canvas` alapon
-- a Unicode sakkfigurák megjelenítését
-- kattintásos bábu-kiválasztást
-- szabályos lépések kiemelését
-- animált lépésvégrehajtást
-- sakkhelyzet vizuális kiemelését
-- pontszámolást
-- gyalogátváltozást
-- undo / redo funkciót
-- bot elleni játékot több nehézségi szinttel
-- multiplayer alapot külön szerverrel
+- teljes grafikus tábla `Canvas`-szal
+- Unicode sakkfigurák
+- kattintásos kijelölés és lépéskiemelés
+- animált lépés
+- sakkvizualizáció
+- pontszámolás
+- gyalogátalakulás
+- undo / redo
+- bot mód
+- bot vs bot mód
+- helyi hálós / TCP-s multiplayer alap külön szerverrel
+- átméretezhető ablak, skálázódó játéktér
 
 ## Játékmódok
 
 ### Singleplayer
 
-Helyi prototípus egy gépen, egy egérrel, két játékossal.
+Két helyi játékos egy gépen.
 
 ### Bot
 
-Bot elleni mód több nehézséggel:
+Nehézségek:
 
 - Könnyű
 - Normál
 - Nehéz
 - Verhetetlen
 
-A bot mód előtt választható, hogy a játékos:
+Indulás előtt választható:
 
 - Fehér
 - Fekete
 - Random
 
-A botnál van automatikus szerepbeállítás is a beállításokban.
+### Bot vs Bot
+
+Mindkét oldalhoz külön nehézség választható. Van `Pause / Resume`, és spectator nézetben fut.
 
 ### Multiplayer
 
-A multiplayerhez külön szerver tartozik.
+Jelenleg tudja:
 
-Jelenlegi állapot:
+- szoba létrehozása
+- meglévő szobához csatlakozás
+- lobby
+- host oldali szerepválasztás
+- lépésküldés TCP kapcsolaton
+- kilépés kezelése
 
-- szoba létrehozás működik
-- meglévő szobához csatlakozás működik
-- lobby és szerepválasztási flow működik
-- a szerver szoba- és kapcsolatkezelése működik
-
-Ez még fejlesztés alatt álló rész, de már nem csak üres placeholder.
-
-## Kezelés
-
-- Kattints egy mozgatható bábra.
-- A program kiemeli a szabályos célmezőket.
-- Kattints a célmezőre.
-- A bábu animációval átcsúszik az új helyére.
-
-Az oldalsó panel mutatja:
-
-- ki van soron
-- melyik szín mozog
-- a pontszámot
-- a lépésszámot
+Ha az egyik fél meccs közben kilép, a másik győzelmet kap, a szoba bezárul.
 
 ## Beállítások
 
-A főmenüben és a kapcsolódó képernyőkön van egy fogaskerék ikon.
-
-Jelenleg egy beállítás érhető el:
+A fogaskerék alatti panelből állítható:
 
 - automatikus szerepválasztási policy
 - bot tempó
+- alap lépéslimit
+- multiplayer szerver host
+- multiplayer szerver port
 
-Értékei:
+Ezek a kliens oldali `.settings.toml` fájlba mentődnek.
 
-- Mindig kérdezzen
-- Mindig Fehér
-- Mindig Fekete
-- Mindig Random
+Minden új meccs indulása előtt külön megadható a lépéslimit is. Az ott látható mező alapértékét a settingsben elmentett alap lépéslimit adja.
 
-Ez jelenleg a bot módra és a multiplayer host szerepválasztására is hat.
+## Konfiguráció
 
-A bot tempó értékei:
+### Kliens
 
-- Lassú
-- Normál
-- Gyors
-- Instant
+Fájl: `.settings.toml`
 
-Ez a botlépések közti mesterséges várakozást szabályozza, főleg bot elleni és bot vs bot módban.
+Példa:
+
+```toml
+[client]
+server_host = "127.0.0.1"
+server_port = 7777
+
+[gameplay]
+auto_role_policy = "ask"
+bot_tempo = "normal"
+move_limit = -1
+```
+
+### Szerver
+
+Fájl: `.server.toml`
+
+Példa:
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 7777
+```
+
+Mindkét fájl automatikusan létrejön, ha hiányzik. Ezek a fájlok `.gitignore` alatt vannak.
 
 ## Fájlok
 
-- `app.py`: kliens, GUI, játéklogika, bot, menük
-- `server.py`: multiplayer szerveralap
-- `start_server.bat`: kényelmi indító a szerverhez
-- `README.md`: projektleírás
+- `app.py`: kliens, GUI, játékmotor, botok
+- `server.py`: multiplayer TCP szerver
+- `.settings.toml`: kliens beállítások
+- `.server.toml`: szerver bind beállítások
 
 ## Futtatás
 
-Kliens indítása:
+Kliens:
 
 ```powershell
 python app.py
 ```
 
-Szerver indítása:
+Szerver:
 
 ```powershell
 python server.py

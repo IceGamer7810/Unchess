@@ -1,14 +1,17 @@
 import tkinter as tk
-from tkinter import font as tkfont
+from tkinter import ttk
 from tkinter import messagebox
 from concurrent.futures import ProcessPoolExecutor
 import json
+import math
 import os
+from pathlib import Path
 import random
 import socket
 import threading
 import queue
 import time
+import tomllib
 
 
 BOARD_SIZE = 8
@@ -17,9 +20,9 @@ BOARD_PIXELS = BOARD_SIZE * SQUARE_SIZE
 SIDEBAR_WIDTH = 260
 WINDOW_WIDTH = BOARD_PIXELS + SIDEBAR_WIDTH
 WINDOW_HEIGHT = BOARD_PIXELS + 70
-MOVE_LIMIT = -80
-SERVER_HOST = "127.0.0.1"
-SERVER_PORT = 7777
+DEFAULT_SERVER_HOST = "127.0.0.1"
+DEFAULT_SERVER_PORT = 7777
+SETTINGS_PATH = Path(".settings.toml")
 
 LIGHT_SQUARE = "#f0d9b5"
 DARK_SQUARE = "#b58863"
@@ -83,6 +86,55 @@ def piece_color(piece):
 
 def opposite(color):
     return "black" if color == "white" else "white"
+
+
+def write_client_settings(settings):
+    content = (
+        "[client]\n"
+        f'server_host = "{settings["server_host"]}"\n'
+        f"server_port = {int(settings['server_port'])}\n\n"
+        "[gameplay]\n"
+        f'auto_role_policy = "{settings["auto_role_policy"]}"\n'
+        f'bot_tempo = "{settings["bot_tempo"]}"\n'
+        f"move_limit = {int(settings['move_limit'])}\n"
+    )
+    SETTINGS_PATH.write_text(content, encoding="utf-8")
+
+
+def load_client_settings():
+    defaults = {
+        "server_host": DEFAULT_SERVER_HOST,
+        "server_port": DEFAULT_SERVER_PORT,
+        "auto_role_policy": "ask",
+        "bot_tempo": "normal",
+        "move_limit": -1,
+    }
+    if not SETTINGS_PATH.exists():
+        write_client_settings(defaults)
+        return defaults.copy()
+
+    settings = defaults.copy()
+    try:
+        data = tomllib.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        write_client_settings(defaults)
+        return defaults.copy()
+
+    client = data.get("client", {})
+    gameplay = data.get("gameplay", {})
+    settings["server_host"] = str(client.get("server_host", defaults["server_host"]))
+    try:
+        settings["server_port"] = int(client.get("server_port", defaults["server_port"]))
+    except (TypeError, ValueError):
+        settings["server_port"] = defaults["server_port"]
+    settings["auto_role_policy"] = str(gameplay.get("auto_role_policy", defaults["auto_role_policy"]))
+    settings["bot_tempo"] = str(gameplay.get("bot_tempo", defaults["bot_tempo"]))
+    try:
+        settings["move_limit"] = int(gameplay.get("move_limit", defaults["move_limit"]))
+    except (TypeError, ValueError):
+        settings["move_limit"] = defaults["move_limit"]
+    write_client_settings(settings)
+    return settings
 
 
 class SearchGameAdapter:
@@ -1026,7 +1078,8 @@ class UnchessGame:
         self.mode_config = mode_config
         self.root.title("Unchess")
         self.root.configure(bg=BG_COLOR)
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
 
         self.container = tk.Frame(parent, bg=BG_COLOR)
         self.container.pack(fill="both", expand=True)
@@ -1038,6 +1091,7 @@ class UnchessGame:
         self.score_white = 0
         self.score_black = 0
         self.move_count = 0
+        self.move_limit = self.mode_config.get("move_limit", self.app.default_move_limit)
         self.animating = False
         self.animating_from = None
         self.game_over = False
@@ -1114,6 +1168,8 @@ class UnchessGame:
 
         board_area = tk.Frame(self.container, bg=BG_COLOR)
         board_area.pack(fill="both", expand=True)
+        board_area.grid_rowconfigure(0, weight=1)
+        board_area.grid_columnconfigure(0, weight=1)
 
         self.canvas = tk.Canvas(
             board_area,
@@ -1124,6 +1180,7 @@ class UnchessGame:
         )
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<Button-1>", self.on_mouse_click)
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
 
         sidebar = tk.Frame(board_area, width=SIDEBAR_WIDTH, bg=BG_COLOR, padx=18, pady=20)
         sidebar.grid(row=0, column=1, sticky="ns")
@@ -1310,7 +1367,30 @@ class UnchessGame:
         self.draw_pieces()
         self.update_sidebar()
 
+    def on_canvas_resize(self, _event):
+        if not self.animating:
+            self.draw()
+
+    def board_metrics(self):
+        canvas_width = max(1, self.canvas.winfo_width())
+        canvas_height = max(1, self.canvas.winfo_height())
+        board_pixels = min(canvas_width, canvas_height)
+        square_size = max(24, board_pixels / BOARD_SIZE)
+        board_pixels = square_size * BOARD_SIZE
+        offset_x = (canvas_width - board_pixels) / 2
+        offset_y = (canvas_height - board_pixels) / 2
+        return square_size, board_pixels, offset_x, offset_y
+
+    def square_to_canvas(self, draw_row, draw_col):
+        square_size, _, offset_x, offset_y = self.board_metrics()
+        return (
+            offset_x + draw_col * square_size,
+            offset_y + draw_row * square_size,
+            square_size,
+        )
+
     def draw_board(self):
+        square_size, board_pixels, offset_x, offset_y = self.board_metrics()
         check_path = set()
         checker_positions = set()
         check_king = None
@@ -1329,13 +1409,21 @@ class UnchessGame:
         self.checker_positions = checker_positions
         self.check_king = check_king
 
+        self.canvas.create_rectangle(
+            offset_x,
+            offset_y,
+            offset_x + board_pixels,
+            offset_y + board_pixels,
+            fill=LIGHT_SQUARE,
+            outline="",
+        )
+
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 draw_row, draw_col = self.to_display_coords(row, col)
-                x1 = draw_col * SQUARE_SIZE
-                y1 = draw_row * SQUARE_SIZE
-                x2 = x1 + SQUARE_SIZE
-                y2 = y1 + SQUARE_SIZE
+                x1, y1, _ = self.square_to_canvas(draw_row, draw_col)
+                x2 = x1 + square_size
+                y2 = y1 + square_size
                 fill = LIGHT_SQUARE if (row + col) % 2 == 0 else DARK_SQUARE
 
                 if self.selected == (row, col):
@@ -1356,10 +1444,11 @@ class UnchessGame:
         for move in self.legal_moves:
             row, col = move["to"]
             draw_row, draw_col = self.to_display_coords(row, col)
-            cx = draw_col * SQUARE_SIZE + SQUARE_SIZE / 2
-            cy = draw_row * SQUARE_SIZE + SQUARE_SIZE / 2
+            x1, y1, _ = self.square_to_canvas(draw_row, draw_col)
+            cx = x1 + square_size / 2
+            cy = y1 + square_size / 2
             occupied = self.board[row][col] != ""
-            radius = 18 if occupied else 12
+            radius = square_size * (0.22 if occupied else 0.14)
             color = CAPTURE_COLOR if occupied else MOVE_COLOR
             self.canvas.create_oval(
                 cx - radius,
@@ -1372,6 +1461,8 @@ class UnchessGame:
             )
 
     def draw_pieces(self):
+        square_size, _, _, _ = self.board_metrics()
+        piece_font_size = max(16, int(square_size * 0.52))
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 if self.animating and self.animating_from == (row, col):
@@ -1380,8 +1471,9 @@ class UnchessGame:
                 if not piece:
                     continue
                 draw_row, draw_col = self.to_display_coords(row, col)
-                cx = draw_col * SQUARE_SIZE + SQUARE_SIZE / 2
-                cy = draw_row * SQUARE_SIZE + SQUARE_SIZE / 2
+                x1, y1, _ = self.square_to_canvas(draw_row, draw_col)
+                cx = x1 + square_size / 2
+                cy = y1 + square_size / 2
                 fill = TEXT_COLOR
                 if self.check_king == (row, col) or (row, col) in self.checker_positions:
                     fill = CHECK_TEXT_COLOR
@@ -1389,7 +1481,7 @@ class UnchessGame:
                     cx,
                     cy,
                     text=PIECE_SYMBOLS[piece],
-                    font=("Segoe UI Symbol", 42),
+                    font=("Segoe UI Symbol", piece_font_size),
                     fill=fill,
                 )
 
@@ -1397,7 +1489,7 @@ class UnchessGame:
         player_name = "FEHÉR" if self.current_actor() == "white" else "FEKETE"
         moving_side = "fehér" if self.side_to_move == "white" else "fekete"
         self.turn_var.set(f"Játékos: {player_name}\nMost mozog: {moving_side}")
-        limit_text = "∞" if MOVE_LIMIT < 0 else str(MOVE_LIMIT)
+        limit_text = "∞" if self.move_limit < 0 else str(self.move_limit)
         self.score_var.set(
             f"Pontok\nFEHÉR: {self.score_white}\nFEKETE: {self.score_black}\nLépések: {self.move_count}/{limit_text}"
         )
@@ -1460,8 +1552,11 @@ class UnchessGame:
         if self.mode_config["mode"] == "multiplayer" and not self.is_local_multiplayer_turn():
             return
 
-        draw_col = event.x // SQUARE_SIZE
-        draw_row = event.y // SQUARE_SIZE
+        square_size, board_pixels, offset_x, offset_y = self.board_metrics()
+        if not (offset_x <= event.x < offset_x + board_pixels and offset_y <= event.y < offset_y + board_pixels):
+            return
+        draw_col = int((event.x - offset_x) // square_size)
+        draw_row = int((event.y - offset_y) // square_size)
         row, col = self.from_display_coords(draw_row, draw_col)
         if not in_bounds(row, col):
             return
@@ -1788,16 +1883,21 @@ class UnchessGame:
 
         self.draw()
 
-        start_x = start_draw_col * SQUARE_SIZE + SQUARE_SIZE / 2
-        start_y = start_draw_row * SQUARE_SIZE + SQUARE_SIZE / 2
-        end_x = end_draw_col * SQUARE_SIZE + SQUARE_SIZE / 2
-        end_y = end_draw_row * SQUARE_SIZE + SQUARE_SIZE / 2
+        square_size, _, _, _ = self.board_metrics()
+        piece_font_size = max(16, int(square_size * 0.52))
+
+        start_x, start_y, _ = self.square_to_canvas(start_draw_row, start_draw_col)
+        end_x, end_y, _ = self.square_to_canvas(end_draw_row, end_draw_col)
+        start_x += square_size / 2
+        start_y += square_size / 2
+        end_x += square_size / 2
+        end_y += square_size / 2
 
         moving_id = self.canvas.create_text(
             start_x,
             start_y,
             text=PIECE_SYMBOLS[moving_piece],
-            font=("Segoe UI Symbol", 42),
+            font=("Segoe UI Symbol", piece_font_size),
             fill=TEXT_COLOR,
         )
 
@@ -1942,7 +2042,7 @@ class UnchessGame:
                 self.end_game(self.score_winner_text("Patt. A pontszám döntött."))
             return
 
-        if MOVE_LIMIT >= 0 and self.move_count >= MOVE_LIMIT:
+        if self.move_limit >= 0 and self.move_count >= self.move_limit:
             self.end_game(self.score_winner_text("Elértétek a lépéslimitet."))
             return
 
@@ -2037,18 +2137,24 @@ class UnchessApp:
         self.root.title("Unchess")
         self.root.configure(bg=BG_COLOR)
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
         self.current_view = None
         self.pending_bot_difficulty = None
         self.pending_bvb = {}
-        self.auto_role_policy = "ask"
-        self.bot_tempo = "normal"
+        settings = load_client_settings()
+        self.server_host = settings["server_host"]
+        self.server_port = settings["server_port"]
+        self.auto_role_policy = settings["auto_role_policy"]
+        self.bot_tempo = settings["bot_tempo"]
+        self.default_move_limit = settings["move_limit"]
         self.multiplayer_client = None
         self.multiplayer_room = None
         self.multiplayer_status_var = None
         self.multiplayer_room_var = None
         self.multiplayer_join_code_var = None
         self.multiplayer_host_controls = None
+        self.multiplayer_move_limit_var = None
         self.multiplayer_is_host = False
         self.pending_multiplayer_action = None
         self.ignore_next_disconnect = False
@@ -2057,9 +2163,17 @@ class UnchessApp:
         self.settings_panel = None
         self.settings_canvas = None
         self.settings_scrollable = None
-        self.settings_font = None
         self.settings_anim_job = None
-        self.settings_font_size = 18
+        self.settings_anchor_widget = None
+        self.settings_icon_angle = 0.0
+        self.settings_icon_scale = 1.0
+        self.settings_hovered = False
+        self.settings_anim_start = None
+        self.settings_anim_duration_ms = 0
+        self.settings_anim_from_angle = 0.0
+        self.settings_anim_to_angle = 0.0
+        self.settings_anim_from_scale = 1.0
+        self.settings_anim_to_scale = 1.0
         self.root.after(120, self.poll_network_events)
         self.show_main_menu()
 
@@ -2080,12 +2194,13 @@ class UnchessApp:
         self.multiplayer_room_var = None
         self.multiplayer_join_code_var = None
         self.multiplayer_host_controls = None
+        self.multiplayer_move_limit_var = None
         self.pending_multiplayer_action = None
 
     def ensure_multiplayer_connection(self):
         if self.multiplayer_client is not None and self.multiplayer_client.connected:
             return
-        client = MultiplayerClient(SERVER_HOST, SERVER_PORT)
+        client = MultiplayerClient(self.server_host, self.server_port)
         client.connect()
         self.ignore_next_disconnect = False
         self.multiplayer_client = client
@@ -2133,7 +2248,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text="A multiplayer mód későbbi, netes játékhoz van fenntartva.",
+            text="Helyi hálón vagy külön TCP szerverrel használható.",
             font=("Segoe UI", 10),
             bg=BG_COLOR,
             fg="#6a6a6a",
@@ -2192,6 +2307,62 @@ class UnchessApp:
             ).pack(fill="x", pady=6)
 
         tk.Button(frame, text="Vissza", command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+
+    def show_match_options(self, title, subtitle, start_callback, back_callback):
+        self.clear_view()
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
+        frame.pack(fill="both", expand=True)
+        self.current_view = frame
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        tk.Label(
+            frame,
+            text=title,
+            font=("Segoe UI", 26, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(anchor="center", pady=(10, 8))
+
+        tk.Label(
+            frame,
+            text=subtitle,
+            font=("Segoe UI", 11),
+            bg=BG_COLOR,
+            fg="#5a5a5a",
+            wraplength=560,
+            justify="center",
+        ).pack(anchor="center", pady=(0, 24))
+
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+
+        tk.Label(card, text="Lépéslimit", font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Label(
+            card,
+            text="Adj meg számot. A -1 végtelen partit jelent.",
+            font=("Segoe UI", 10),
+            bg=BG_COLOR,
+            fg="#6a6a6a",
+        ).pack(anchor="w", pady=(2, 8))
+
+        move_limit_var = tk.StringVar(value=str(self.default_move_limit))
+        entry = tk.Entry(card, textvariable=move_limit_var, font=("Consolas", 18), justify="center", width=10)
+        entry.pack(anchor="center", pady=(0, 16))
+        entry.focus_set()
+
+        def begin():
+            try:
+                move_limit = int(move_limit_var.get().strip())
+            except ValueError:
+                messagebox.showerror("Indítás", "A lépéslimit csak egész szám lehet.")
+                return
+            start_callback(move_limit)
+
+        self.menu_button(card, "Start", begin).pack(fill="x", pady=6)
+        tk.Button(frame, text="Vissza", command=back_callback, padx=12).pack(pady=(18, 0))
 
     def show_bot_vs_bot_white_menu(self):
         self.pending_bvb = {}
@@ -2255,12 +2426,22 @@ class UnchessApp:
         if color == "white":
             self.show_bot_vs_bot_black_menu()
         else:
-            self.start_bot_vs_bot_game()
+            self.show_match_options(
+                "Bot vs Bot",
+                "Állítsd be a parti lépéslimitjét.",
+                self.start_bot_vs_bot_game,
+                self.show_bot_vs_bot_black_menu,
+            )
 
     def show_bot_color_menu(self, difficulty, label):
         self.pending_bot_difficulty = {"difficulty": difficulty, "label": label}
         if self.auto_role_policy != "ask":
-            self.start_bot_game(self.resolve_player_color(self.auto_role_policy))
+            self.show_match_options(
+                "Bot meccs",
+                "Állítsd be a parti lépéslimitjét.",
+                lambda move_limit: self.start_bot_game(self.resolve_player_color(self.auto_role_policy), move_limit),
+                self.show_bot_menu,
+            )
             return
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
@@ -2290,8 +2471,8 @@ class UnchessApp:
         menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         menu_card.pack(anchor="center")
 
-        self.menu_button(menu_card, "Fehér", lambda: self.start_bot_game("white")).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "Fekete", lambda: self.start_bot_game("black")).pack(fill="x", pady=6)
+        self.menu_button(menu_card, "Fehér", lambda: self.show_bot_match_options("white")).pack(fill="x", pady=6)
+        self.menu_button(menu_card, "Fekete", lambda: self.show_bot_match_options("black")).pack(fill="x", pady=6)
         self.menu_button(menu_card, "Random", self.start_random_bot_game).pack(fill="x", pady=6)
 
         tk.Button(frame, text="Vissza", command=self.show_bot_menu, padx=12).pack(pady=(18, 0))
@@ -2316,7 +2497,7 @@ class UnchessApp:
 
         tk.Label(
             frame,
-            text=f"Szerver: {SERVER_HOST}:{SERVER_PORT}",
+            text=f"Szerver: {self.server_host}:{self.server_port}",
             font=("Segoe UI", 11),
             bg=BG_COLOR,
             fg="#5a5a5a",
@@ -2431,35 +2612,81 @@ class UnchessApp:
             return
         for child in self.multiplayer_host_controls.winfo_children():
             child.destroy()
+        self.multiplayer_move_limit_var = tk.StringVar(value=str(self.default_move_limit))
         tk.Label(
             self.multiplayer_host_controls,
-            text="Az ellenfél megérkezett. Válassz szerepet:",
+            text="Az ellenfél megérkezett. Állítsd be a parti indulását:",
             font=("Segoe UI", 10, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
         ).pack(pady=(0, 8))
+        tk.Label(
+            self.multiplayer_host_controls,
+            text="Lépéslimit (-1 = végtelen)",
+            font=("Segoe UI", 10),
+            bg=BG_COLOR,
+            fg="#6a6a6a",
+        ).pack()
+        tk.Entry(
+            self.multiplayer_host_controls,
+            textvariable=self.multiplayer_move_limit_var,
+            font=("Consolas", 16),
+            justify="center",
+            width=8,
+        ).pack(pady=(4, 10))
         row = tk.Frame(self.multiplayer_host_controls, bg=BG_COLOR)
         row.pack()
-        tk.Button(row, text="Fehér", command=lambda: self.send_role_choice("white"), padx=12).pack(side="left", padx=4)
-        tk.Button(row, text="Fekete", command=lambda: self.send_role_choice("black"), padx=12).pack(side="left", padx=4)
-        tk.Button(row, text="Random", command=lambda: self.send_role_choice("random"), padx=12).pack(side="left", padx=4)
+        if self.auto_role_policy == "ask":
+            tk.Button(row, text="Fehér", command=lambda: self.send_role_choice("white"), padx=12).pack(side="left", padx=4)
+            tk.Button(row, text="Fekete", command=lambda: self.send_role_choice("black"), padx=12).pack(side="left", padx=4)
+            tk.Button(row, text="Random", command=lambda: self.send_role_choice("random"), padx=12).pack(side="left", padx=4)
+        else:
+            tk.Label(
+                row,
+                text=f"Szerep: {self.role_policy_label(self.auto_role_policy)}",
+                font=("Segoe UI", 10),
+                bg=BG_COLOR,
+                fg=TEXT_COLOR,
+            ).pack(side="left", padx=(0, 8))
+            tk.Button(row, text="Start", command=lambda: self.send_role_choice(self.auto_role_policy), padx=12).pack(side="left", padx=4)
 
     def send_role_choice(self, choice):
         if self.multiplayer_client is not None:
+            try:
+                move_limit = int((self.multiplayer_move_limit_var.get() if self.multiplayer_move_limit_var is not None else str(self.default_move_limit)).strip())
+            except ValueError:
+                messagebox.showerror("Multiplayer", "A lépéslimit csak egész szám lehet.")
+                return
             self.multiplayer_status_var.set("Szerepkiosztás elküldve...")
-            self.multiplayer_client.send({"type": "choose_role", "preference": choice})
+            self.multiplayer_client.send({"type": "choose_role", "preference": choice, "move_limit": move_limit})
 
     def cancel_multiplayer(self):
         self.close_multiplayer_client()
         self.show_multiplayer_placeholder()
 
     def start_singleplayer(self):
-        self.start_game({"mode": "singleplayer", "difficulty": None, "difficulty_label": None})
+        self.show_match_options(
+            "Singleplayer",
+            "Állítsd be a parti lépéslimitjét.",
+            self.start_singleplayer_game,
+            self.show_main_menu,
+        )
+
+    def start_singleplayer_game(self, move_limit):
+        self.start_game({"mode": "singleplayer", "difficulty": None, "difficulty_label": None, "move_limit": move_limit})
 
     def start_random_bot_game(self):
-        self.start_bot_game(random.choice(["white", "black"]))
+        self.show_bot_match_options(random.choice(["white", "black"]))
 
-    def start_bot_game(self, player_color):
+    def show_bot_match_options(self, player_color):
+        self.show_match_options(
+            "Bot meccs",
+            "Állítsd be a parti lépéslimitjét.",
+            lambda move_limit: self.start_bot_game(player_color, move_limit),
+            lambda: self.show_bot_color_menu(self.pending_bot_difficulty["difficulty"], self.pending_bot_difficulty["label"]),
+        )
+
+    def start_bot_game(self, player_color, move_limit):
         if not self.pending_bot_difficulty:
             self.show_bot_menu()
             return
@@ -2471,10 +2698,11 @@ class UnchessApp:
                 "difficulty_label": self.pending_bot_difficulty["label"],
                 "bot_color": bot_color,
                 "player_color": player_color,
+                "move_limit": move_limit,
             }
         )
 
-    def start_bot_vs_bot_game(self):
+    def start_bot_vs_bot_game(self, move_limit):
         if "white" not in self.pending_bvb or "black" not in self.pending_bvb:
             self.show_bot_vs_bot_white_menu()
             return
@@ -2487,10 +2715,11 @@ class UnchessApp:
                 },
                 "white_label": self.pending_bvb["white"]["label"],
                 "black_label": self.pending_bvb["black"]["label"],
+                "move_limit": move_limit,
             }
         )
 
-    def start_multiplayer_game(self, player_color, room_code):
+    def start_multiplayer_game(self, player_color, room_code, move_limit):
         self.start_game(
             {
                 "mode": "multiplayer",
@@ -2499,6 +2728,7 @@ class UnchessApp:
                 "player_color": player_color,
                 "network_client": self.multiplayer_client,
                 "room_code": room_code,
+                "move_limit": move_limit,
             }
         )
 
@@ -2549,10 +2779,7 @@ class UnchessApp:
             if self.multiplayer_status_var is not None:
                 self.multiplayer_status_var.set("Az ellenfél megérkezett.")
             if self.multiplayer_is_host:
-                if self.auto_role_policy == "ask":
-                    self.show_multiplayer_role_choice()
-                else:
-                    self.send_role_choice(self.auto_role_policy)
+                self.show_multiplayer_role_choice()
             return
         if event_type == "game_start":
             room = event["room"]
@@ -2565,13 +2792,24 @@ class UnchessApp:
                 assignment = room["role_assignment"]
                 # If we created the room, we are the host. Otherwise we are the guest.
                 player_color = assignment["host"] if self.multiplayer_is_host else assignment["guest"]
-                self.start_multiplayer_game(player_color, room["room_code"])
+                self.start_multiplayer_game(player_color, room["room_code"], room.get("move_limit", self.default_move_limit))
             return
         if event_type == "player_left":
             room = event["room"]
             self.multiplayer_room = room
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "multiplayer":
+                leaver = event.get("player_name", "Az ellenfél")
+                if event.get("game_was_started"):
+                    messagebox.showinfo("Multiplayer", f"{leaver} kilépett. Nyertél.")
+                else:
+                    messagebox.showinfo("Multiplayer", f"{leaver} kilépett. A szoba bezárult.")
+                self.close_multiplayer_client()
+                self.show_multiplayer_placeholder()
+                return
             if self.multiplayer_status_var is not None:
                 self.multiplayer_status_var.set("Az ellenfél kilépett.")
+            self.close_multiplayer_client()
+            self.show_multiplayer_placeholder()
             return
         if event_type == "move_broadcast":
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "multiplayer":
@@ -2595,37 +2833,135 @@ class UnchessApp:
 
     def mount_settings_button(self, parent):
         self.settings_parent = parent
-        button = tk.Label(
+        button = tk.Canvas(
             parent,
-            text="⚙",
             bg=BG_COLOR,
-            fg=TEXT_COLOR,
             cursor="hand2",
+            width=40,
+            height=40,
+            highlightthickness=0,
+            bd=0,
         )
-        self.settings_font = tkfont.Font(family="Segoe UI Symbol", size=self.settings_font_size)
-        button.configure(font=self.settings_font)
-        button.pack(anchor="nw")
-        button.bind("<Enter>", lambda _event: self.animate_settings_font(22))
-        button.bind("<Leave>", lambda _event: self.animate_settings_font(18))
+        button.pack(side="left", anchor="nw", padx=(0, 8))
+        self.draw_settings_icon(button, 0.0, 1.0)
+        button.bind("<Enter>", lambda _event: self.on_settings_hover_enter())
+        button.bind("<Leave>", lambda _event: self.on_settings_hover_leave())
         button.bind("<Button-1>", lambda _event: self.toggle_settings_panel())
         self.settings_button = button
+        self.settings_anchor_widget = button
 
-    def animate_settings_font(self, target_size):
+    def draw_settings_icon(self, canvas, angle_degrees, scale):
+        canvas.delete("all")
+        size = 40
+        center = size / 2
+        ring_outer = 8.7 * scale
+        ring_inner = 4.4 * scale
+        tooth_inner = 10.3 * scale
+        tooth_outer = 14.0 * scale
+        tooth_half_width = 1.85 * scale
+        stroke = max(2, int(round(1.8 * scale)))
+        fill = "#6d4c35" if self.settings_hovered else TEXT_COLOR
+        angle_offset = math.radians(angle_degrees)
+
+        for index in range(8):
+            theta = angle_offset + index * (math.pi / 4.0)
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            tx = -sin_t
+            ty = cos_t
+            p1 = (
+                center + cos_t * tooth_inner + tx * tooth_half_width,
+                center + sin_t * tooth_inner + ty * tooth_half_width,
+            )
+            p2 = (
+                center + cos_t * tooth_inner - tx * tooth_half_width,
+                center + sin_t * tooth_inner - ty * tooth_half_width,
+            )
+            p3 = (
+                center + cos_t * tooth_outer - tx * tooth_half_width,
+                center + sin_t * tooth_outer - ty * tooth_half_width,
+            )
+            p4 = (
+                center + cos_t * tooth_outer + tx * tooth_half_width,
+                center + sin_t * tooth_outer + ty * tooth_half_width,
+            )
+            canvas.create_polygon(
+                p1,
+                p2,
+                p3,
+                p4,
+                fill=fill,
+                outline=fill,
+            )
+        canvas.create_oval(
+            center - ring_outer,
+            center - ring_outer,
+            center + ring_outer,
+            center + ring_outer,
+            fill=fill,
+            outline=fill,
+        )
+        canvas.create_oval(
+            center - ring_inner,
+            center - ring_inner,
+            center + ring_inner,
+            center + ring_inner,
+            fill=BG_COLOR,
+            outline=BG_COLOR,
+        )
+        canvas.create_oval(
+            center - 0.9 * scale,
+            center - 0.9 * scale,
+            center + 0.9 * scale,
+            center + 0.9 * scale,
+            fill=fill,
+            outline=fill,
+        )
+
+    def on_settings_hover_enter(self):
+        self.settings_hovered = True
+        self.animate_settings_icon(target_angle=360.0, target_scale=1.17, duration_ms=1000)
+
+    def on_settings_hover_leave(self):
+        self.settings_hovered = False
+        self.animate_settings_icon(target_angle=0.0, target_scale=1.0, duration_ms=180)
+
+    def animate_settings_icon(self, target_angle, target_scale, duration_ms):
         if self.settings_anim_job is not None:
             self.root.after_cancel(self.settings_anim_job)
             self.settings_anim_job = None
+        if self.settings_button is None:
+            return
+
+        self.settings_anim_start = time.perf_counter()
+        self.settings_anim_duration_ms = duration_ms
+        self.settings_anim_from_angle = self.settings_icon_angle
+        self.settings_anim_to_angle = target_angle
+        self.settings_anim_from_scale = self.settings_icon_scale
+        self.settings_anim_to_scale = target_scale
+
+        def ease_in_out_sine(t):
+            return 0.5 - 0.5 * math.cos(math.pi * t)
 
         def step():
-            current = self.settings_font_size
-            if current == target_size or self.settings_font is None:
-                return
-            current += 1 if current < target_size else -1
-            self.settings_font_size = current
-            self.settings_font.configure(size=current)
-            if self.settings_button is not None:
-                self.settings_button.configure(fg="#7f5539" if current > 18 else TEXT_COLOR)
-            if current != target_size:
-                self.settings_anim_job = self.root.after(18, step)
+            elapsed_ms = (time.perf_counter() - self.settings_anim_start) * 1000.0
+            t = min(1.0, elapsed_ms / self.settings_anim_duration_ms)
+            eased = ease_in_out_sine(t)
+            angle = self.settings_anim_from_angle + (self.settings_anim_to_angle - self.settings_anim_from_angle) * eased
+            if self.settings_anim_to_scale > self.settings_anim_from_scale:
+                scale = 1.0 + 0.17 * math.sin(math.pi * t)
+            else:
+                scale = self.settings_anim_from_scale + (self.settings_anim_to_scale - self.settings_anim_from_scale) * eased
+            self.settings_icon_angle = angle
+            self.settings_icon_scale = scale
+            self.draw_settings_icon(self.settings_button, angle, scale)
+            if t < 1.0:
+                self.settings_anim_job = self.root.after(16, step)
+            else:
+                self.settings_anim_job = None
+                self.settings_icon_angle = target_angle % 360.0
+                self.settings_icon_scale = target_scale
+                self.draw_settings_icon(self.settings_button, self.settings_icon_angle, self.settings_icon_scale)
 
         step()
 
@@ -2642,26 +2978,32 @@ class UnchessApp:
             self.settings_panel = None
             self.settings_canvas = None
             self.settings_scrollable = None
+        if self.settings_button is not None and not self.settings_hovered:
+            self.draw_settings_icon(self.settings_button, self.settings_icon_angle, self.settings_icon_scale)
 
     def open_settings_panel(self):
-        if self.settings_parent is None:
+        if self.settings_parent is None or self.settings_anchor_widget is None:
             return
 
         self.settings_panel = tk.Frame(
-            self.settings_parent,
-            bg="#efe5d8",
-            bd=1,
-            relief="solid",
+            self.root,
+            bg=BG_COLOR,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#dac7b1",
             padx=0,
             pady=0,
         )
-        self.settings_panel.pack(anchor="nw", pady=(8, 0))
+        self.root.update_idletasks()
+        anchor_x = self.settings_anchor_widget.winfo_rootx() - self.root.winfo_rootx()
+        anchor_y = self.settings_anchor_widget.winfo_rooty() - self.root.winfo_rooty()
+        anchor_width = self.settings_anchor_widget.winfo_width()
 
         self.settings_canvas = tk.Canvas(
             self.settings_panel,
             width=340,
             height=250,
-            bg="#efe5d8",
+            bg=BG_COLOR,
             highlightthickness=0,
         )
         self.settings_canvas.pack(side="left", fill="both", expand=True)
@@ -2670,7 +3012,7 @@ class UnchessApp:
         scrollbar.pack(side="right", fill="y")
         self.settings_canvas.configure(yscrollcommand=scrollbar.set)
 
-        self.settings_scrollable = tk.Frame(self.settings_canvas, bg="#efe5d8", padx=16, pady=16)
+        self.settings_scrollable = tk.Frame(self.settings_canvas, bg=BG_COLOR, padx=16, pady=16)
         self.settings_canvas.create_window((0, 0), window=self.settings_scrollable, anchor="nw")
         self.settings_scrollable.bind(
             "<Configure>",
@@ -2683,7 +3025,7 @@ class UnchessApp:
             panel,
             text="Beállítások",
             font=("Segoe UI", 12, "bold"),
-            bg="#efe5d8",
+            bg=BG_COLOR,
             fg=TEXT_COLOR,
         ).pack(anchor="w", pady=(0, 10))
 
@@ -2691,58 +3033,157 @@ class UnchessApp:
             panel,
             text="Auto role policy",
             font=("Segoe UI", 11, "bold"),
-            bg="#efe5d8",
+            bg=BG_COLOR,
             fg=TEXT_COLOR,
         ).pack(anchor="w", pady=(0, 8))
 
-        policy_var = tk.StringVar(value=self.auto_role_policy)
+        policy_values = ("ask", "white", "black", "random")
+        policy_display = {value: self.role_policy_label(value) for value in policy_values}
+        policy_reverse = {label: value for value, label in policy_display.items()}
+        policy_var = tk.StringVar(value=policy_display[self.auto_role_policy])
 
-        def set_policy():
-            self.auto_role_policy = policy_var.get()
-
-        for value in ("ask", "white", "black", "random"):
-            tk.Radiobutton(
-                panel,
-                text=self.role_policy_label(value),
-                value=value,
-                variable=policy_var,
-                command=set_policy,
-                bg="#efe5d8",
-                anchor="w",
-                justify="left",
-            ).pack(fill="x", pady=2)
+        def set_policy(_event=None):
+            self.auto_role_policy = policy_reverse[policy_var.get()]
+            self.save_settings()
+        policy_combo = ttk.Combobox(
+            panel,
+            textvariable=policy_var,
+            values=[policy_display[value] for value in policy_values],
+            state="readonly",
+        )
+        policy_combo.pack(fill="x", pady=(0, 4))
+        policy_combo.bind("<<ComboboxSelected>>", set_policy)
 
         tk.Label(
             panel,
             text="Bot tempó",
             font=("Segoe UI", 11, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(anchor="w", pady=(14, 8))
+
+        tempo_values = ("slow", "normal", "fast", "instant")
+        tempo_display = {value: self.bot_tempo_label(value) for value in tempo_values}
+        tempo_reverse = {label: value for value, label in tempo_display.items()}
+        tempo_var = tk.StringVar(value=tempo_display[self.bot_tempo])
+
+        def set_tempo(_event=None):
+            self.bot_tempo = tempo_reverse[tempo_var.get()]
+            self.save_settings()
+        tempo_combo = ttk.Combobox(
+            panel,
+            textvariable=tempo_var,
+            values=[tempo_display[value] for value in tempo_values],
+            state="readonly",
+        )
+        tempo_combo.pack(fill="x", pady=(0, 4))
+        tempo_combo.bind("<<ComboboxSelected>>", set_tempo)
+
+        tk.Label(
+            panel,
+            text="Alap lépéslimit",
+            font=("Segoe UI", 11, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(anchor="w", pady=(14, 8))
+
+        tk.Label(
+            panel,
+            text="Negatív szám = végtelen",
+            font=("Segoe UI", 10),
+            bg="#efe5d8",
+            fg="#6a6a6a",
+            justify="left",
+            wraplength=260,
+        ).pack(anchor="w", pady=(0, 6))
+
+        move_limit_var = tk.StringVar(value=str(self.default_move_limit))
+
+        def save_default_move_limit(*_args):
+            raw = move_limit_var.get().strip()
+            if raw in {"", "-"}:
+                return
+            try:
+                self.default_move_limit = int(raw)
+            except ValueError:
+                return
+            self.save_settings()
+
+        move_limit_entry = tk.Entry(panel, textvariable=move_limit_var, font=("Consolas", 14), justify="center", width=10)
+        move_limit_entry.pack(anchor="w", pady=(0, 2))
+        move_limit_entry.bind("<FocusOut>", save_default_move_limit)
+        move_limit_entry.bind("<Return>", save_default_move_limit)
+
+        tk.Label(
+            panel,
+            text="Multiplayer szerver",
+            font=("Segoe UI", 11, "bold"),
             bg="#efe5d8",
             fg=TEXT_COLOR,
         ).pack(anchor="w", pady=(14, 8))
 
-        tempo_var = tk.StringVar(value=self.bot_tempo)
+        host_row = tk.Frame(panel, bg=BG_COLOR)
+        host_row.pack(fill="x", pady=(0, 6))
+        tk.Label(host_row, text="Host", width=8, anchor="w", bg=BG_COLOR, fg=TEXT_COLOR).pack(side="left")
+        host_var = tk.StringVar(value=self.server_host)
+        host_entry = tk.Entry(host_row, textvariable=host_var)
+        host_entry.pack(side="left", fill="x", expand=True)
 
-        def set_tempo():
-            self.bot_tempo = tempo_var.get()
+        port_row = tk.Frame(panel, bg=BG_COLOR)
+        port_row.pack(fill="x", pady=(0, 6))
+        tk.Label(port_row, text="Port", width=8, anchor="w", bg=BG_COLOR, fg=TEXT_COLOR).pack(side="left")
+        port_var = tk.StringVar(value=str(self.server_port))
+        port_entry = tk.Entry(port_row, textvariable=port_var)
+        port_entry.pack(side="left", fill="x", expand=True)
 
-        for value in ("slow", "normal", "fast", "instant"):
-            tk.Radiobutton(
-                panel,
-                text=self.bot_tempo_label(value),
-                value=value,
-                variable=tempo_var,
-                command=set_tempo,
-                bg="#efe5d8",
-                anchor="w",
-                justify="left",
-            ).pack(fill="x", pady=2)
+        def save_server_target(*_args):
+            host = host_var.get().strip() or DEFAULT_SERVER_HOST
+            try:
+                port = int(port_var.get().strip())
+            except ValueError:
+                return
+            self.server_host = host
+            self.server_port = port
+            self.save_settings()
+        host_entry.bind("<FocusOut>", save_server_target)
+        host_entry.bind("<Return>", save_server_target)
+        port_entry.bind("<FocusOut>", save_server_target)
+        port_entry.bind("<Return>", save_server_target)
 
         tk.Button(panel, text="Bezárás", command=self.close_settings_panel, padx=12).pack(anchor="e", pady=(14, 0))
+        self.settings_panel.update_idletasks()
+        panel_width = self.settings_panel.winfo_reqwidth()
+        panel_height = self.settings_panel.winfo_reqheight()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        preferred_right_x = anchor_x + anchor_width + 10
+        preferred_left_x = anchor_x - panel_width - 10
+        if preferred_right_x + panel_width <= root_width - 8:
+            panel_x = preferred_right_x
+        elif preferred_left_x >= 8:
+            panel_x = preferred_left_x
+        else:
+            panel_x = max(8, min(preferred_right_x, root_width - panel_width - 8))
+        panel_y = max(8, anchor_y - 2)
+        if panel_y + panel_height > root_height - 8:
+            panel_y = max(8, root_height - panel_height - 8)
+        self.settings_panel.place(x=panel_x, y=panel_y)
 
     def on_settings_mousewheel(self, event):
         if self.settings_canvas is None:
             return
         self.settings_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def save_settings(self):
+        write_client_settings(
+            {
+                "server_host": self.server_host,
+                "server_port": self.server_port,
+                "auto_role_policy": self.auto_role_policy,
+                "bot_tempo": self.bot_tempo,
+                "move_limit": self.default_move_limit,
+            }
+        )
 
     def role_policy_label(self, policy):
         labels = {
