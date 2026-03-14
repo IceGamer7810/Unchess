@@ -3,6 +3,7 @@ from tkinter import ttk
 from tkinter import messagebox
 from concurrent.futures import ProcessPoolExecutor
 import json
+import locale
 import math
 import os
 from pathlib import Path
@@ -89,6 +90,15 @@ def opposite(color):
     return "black" if color == "white" else "white"
 
 
+def detect_default_language():
+    try:
+        system_locale = locale.getlocale()[0] or locale.getdefaultlocale()[0]
+    except Exception:
+        system_locale = None
+    system_locale = (system_locale or "").lower()
+    return "hu" if system_locale.startswith("hu") else "en"
+
+
 def write_client_settings(settings):
     content = (
         "[client]\n"
@@ -100,7 +110,9 @@ def write_client_settings(settings):
         "[gameplay]\n"
         f'auto_role_policy = "{settings["auto_role_policy"]}"\n'
         f'bot_tempo = "{settings["bot_tempo"]}"\n'
-        f"move_limit = {int(settings['move_limit'])}\n"
+        f"move_limit = {int(settings['move_limit'])}\n\n"
+        "[ui]\n"
+        f'language = "{settings["language"]}"\n'
     )
     SETTINGS_PATH.write_text(content, encoding="utf-8")
 
@@ -114,6 +126,7 @@ def load_client_settings():
         "auto_role_policy": "ask",
         "bot_tempo": "normal",
         "move_limit": -1,
+        "language": detect_default_language(),
     }
     if not SETTINGS_PATH.exists() and LEGACY_SETTINGS_PATH.exists():
         SETTINGS_PATH.write_text(LEGACY_SETTINGS_PATH.read_text(encoding="utf-8"), encoding="utf-8")
@@ -131,6 +144,7 @@ def load_client_settings():
     client = data.get("client", {})
     auth = data.get("auth", {})
     gameplay = data.get("gameplay", {})
+    ui = data.get("ui", {})
     settings["server_host"] = str(client.get("server_host", defaults["server_host"]))
     try:
         settings["server_port"] = int(client.get("server_port", defaults["server_port"]))
@@ -144,6 +158,9 @@ def load_client_settings():
         settings["move_limit"] = int(gameplay.get("move_limit", defaults["move_limit"]))
     except (TypeError, ValueError):
         settings["move_limit"] = defaults["move_limit"]
+    settings["language"] = str(ui.get("language", defaults["language"])).lower()
+    if settings["language"] not in {"hu", "en"}:
+        settings["language"] = defaults["language"]
     write_client_settings(settings)
     return settings
 
@@ -1128,6 +1145,7 @@ class UnchessGame:
         self.pending_bot_move = None
         self.bot_paused = False
         self.pause_button = None
+        self.destroyed = False
         self.network_client = self.mode_config.get("network_client")
         self.pending_network_move = None
         self.pending_network_sync = None
@@ -1277,6 +1295,10 @@ class UnchessGame:
         self.start_turn()
 
     def destroy(self):
+        self.destroyed = True
+        self.game_over = True
+        self.bot_paused = True
+        self.pending_bot_move = None
         self.container.destroy()
 
     def toggle_bot_pause(self):
@@ -1933,6 +1955,8 @@ class UnchessGame:
         dy = (end_y - start_y) / frames
 
         def step(frame=0):
+            if self.destroyed or not self.container.winfo_exists():
+                return
             if frame < frames:
                 self.canvas.move(moving_id, dx, dy)
                 self.root.after(24, step, frame + 1)
@@ -2065,6 +2089,8 @@ class UnchessGame:
         return result["value"]
 
     def start_turn(self):
+        if self.destroyed or not self.container.winfo_exists():
+            return
         if self.game_over:
             return
 
@@ -2110,6 +2136,8 @@ class UnchessGame:
             self.root.after(self.app.bot_delay_ms(), self.run_bot_turn)
 
     def run_bot_turn(self):
+        if self.destroyed or not self.container.winfo_exists():
+            return
         if self.game_over or self.animating or not self.is_bot_turn() or self.bot_thinking:
             return
         if self.mode_config["mode"] == "bot_vs_bot" and self.bot_paused:
@@ -2134,6 +2162,10 @@ class UnchessGame:
         self.root.after(40, self.poll_bot_result)
 
     def poll_bot_result(self):
+        if self.destroyed or not self.container.winfo_exists():
+            self.bot_thinking = False
+            self.bot_thread = None
+            return
         if not self.bot_thinking:
             return
         try:
@@ -2190,6 +2222,7 @@ class UnchessApp:
         self.user_name = settings["user_name"]
         self.remember_token = settings["remember_token"]
         self.is_admin = False
+        self.language = settings["language"]
         self.auto_role_policy = settings["auto_role_policy"]
         self.bot_tempo = settings["bot_tempo"]
         self.default_move_limit = settings["move_limit"]
@@ -3021,6 +3054,18 @@ class UnchessApp:
         if event_type == "ban_success":
             messagebox.showinfo("Multiplayer", f"Játékos tiltva: {event.get('banned_username', 'ismeretlen')}")
             return
+        if event_type == "server_shutdown":
+            message = event.get("message", "A szerver leáll.")
+            immediate = bool(event.get("immediate"))
+            seconds_remaining = int(event.get("seconds_remaining", 0) or 0)
+            if immediate or seconds_remaining <= 0:
+                messagebox.showwarning("Multiplayer", message)
+                self.close_multiplayer_client()
+                self.show_multiplayer_placeholder()
+                return
+            minutes = max(1, seconds_remaining // 60)
+            messagebox.showwarning("Multiplayer", f"{message}\nHátralévő idő: ~{minutes} perc")
+            return
         if event_type == "room_created":
             self.multiplayer_room = event["room"]
             self.pending_multiplayer_action = None
@@ -3315,11 +3360,39 @@ class UnchessApp:
 
         tk.Label(
             panel,
-            text="Auto role policy",
+            text="Language",
             font=("Segoe UI", 11, "bold"),
             bg=BG_COLOR,
             fg=TEXT_COLOR,
         ).pack(anchor="w", pady=(0, 8))
+
+        language_values = ("hu", "en")
+        language_display = {value: self.language_label(value) for value in language_values}
+        language_reverse = {label: value for value, label in language_display.items()}
+        language_var = tk.StringVar(value=language_display[self.language])
+
+        def set_language(_event=None):
+            self.language = language_reverse[language_var.get()]
+            self.save_settings()
+            self.close_settings_panel()
+            self.open_settings_panel()
+
+        language_combo = ttk.Combobox(
+            panel,
+            textvariable=language_var,
+            values=[language_display[value] for value in language_values],
+            state="readonly",
+        )
+        language_combo.pack(fill="x", pady=(0, 10))
+        language_combo.bind("<<ComboboxSelected>>", set_language)
+
+        tk.Label(
+            panel,
+            text="Auto role policy",
+            font=("Segoe UI", 11, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(anchor="w", pady=(4, 8))
 
         policy_values = ("ask", "white", "black", "random")
         policy_display = {value: self.role_policy_label(value) for value in policy_values}
@@ -3470,6 +3543,7 @@ class UnchessApp:
                 "auto_role_policy": self.auto_role_policy,
                 "bot_tempo": self.bot_tempo,
                 "move_limit": self.default_move_limit,
+                "language": self.language,
             }
         )
 
@@ -3490,6 +3564,50 @@ class UnchessApp:
             "instant": "Instant",
         }
         return labels[tempo]
+
+    def role_policy_label(self, policy):
+        labels = {
+            "hu": {
+                "ask": "Mindig kérdezzen",
+                "white": "Mindig Fehér",
+                "black": "Mindig Fekete",
+                "random": "Mindig véletlen",
+            },
+            "en": {
+                "ask": "Always ask",
+                "white": "Always white",
+                "black": "Always black",
+                "random": "Always random",
+            },
+        }
+        lang = self.language if self.language in labels else "en"
+        return labels[lang][policy]
+
+    def language_label(self, language):
+        labels = {
+            "hu": {"hu": "Magyar", "en": "Angol"},
+            "en": {"hu": "Hungarian", "en": "English"},
+        }
+        lang = self.language if self.language in labels else "en"
+        return labels[lang][language]
+
+    def bot_tempo_label(self, tempo):
+        labels = {
+            "hu": {
+                "slow": "Lassú",
+                "normal": "Normál",
+                "fast": "Gyors",
+                "instant": "Azonnali",
+            },
+            "en": {
+                "slow": "Slow",
+                "normal": "Normal",
+                "fast": "Fast",
+                "instant": "Instant",
+            },
+        }
+        lang = self.language if self.language in labels else "en"
+        return labels[lang][tempo]
 
     def resolve_player_color(self, policy):
         if policy == "white":
