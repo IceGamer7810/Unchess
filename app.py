@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import random
+import re
 import socket
 import threading
 import queue
@@ -25,6 +26,8 @@ DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 7777
 SETTINGS_PATH = Path("settings.toml")
 LEGACY_SETTINGS_PATH = Path(".settings.toml")
+
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 LIGHT_SQUARE = "#f0d9b5"
 DARK_SQUARE = "#b58863"
@@ -99,6 +102,10 @@ def detect_default_language():
     return "hu" if system_locale.startswith("hu") else "en"
 
 
+def username_is_ascii_safe(username):
+    return USERNAME_RE.fullmatch((username or "").strip()) is not None
+
+
 def write_client_settings(settings):
     content = (
         "[client]\n"
@@ -106,6 +113,7 @@ def write_client_settings(settings):
         f"server_port = {int(settings['server_port'])}\n\n"
         "[auth]\n"
         f'user_name = "{settings["user_name"]}"\n'
+        f'session_role = "{settings["session_role"]}"\n'
         f'remember_token = "{settings["remember_token"]}"\n\n'
         "[gameplay]\n"
         f'auto_role_policy = "{settings["auto_role_policy"]}"\n'
@@ -122,6 +130,7 @@ def load_client_settings():
         "server_host": DEFAULT_SERVER_HOST,
         "server_port": DEFAULT_SERVER_PORT,
         "user_name": "",
+        "session_role": "",
         "remember_token": "",
         "auto_role_policy": "ask",
         "bot_tempo": "normal",
@@ -151,7 +160,10 @@ def load_client_settings():
     except (TypeError, ValueError):
         settings["server_port"] = defaults["server_port"]
     settings["user_name"] = str(auth.get("user_name", defaults["user_name"]))
+    settings["session_role"] = str(auth.get("session_role", defaults["session_role"])).lower()
     settings["remember_token"] = str(auth.get("remember_token", defaults["remember_token"]))
+    if settings["session_role"] not in {"", "player", "admin", "console"}:
+        settings["session_role"] = ""
     settings["auto_role_policy"] = str(gameplay.get("auto_role_policy", defaults["auto_role_policy"]))
     settings["bot_tempo"] = str(gameplay.get("bot_tempo", defaults["bot_tempo"]))
     try:
@@ -1191,23 +1203,31 @@ class UnchessGame:
         )
         self.back_button.pack(side="right")
 
-        if self.mode_config["mode"] == "multiplayer":
+        if self.mode_config["mode"] in {"multiplayer", "spectator"}:
             if self.app.is_admin:
                 self.ban_button = tk.Button(
                     header,
                     text=self.app.ui_label("ban"),
-                    command=self.ban_opponent,
+                    command=self.ban_spectated_target if self.mode_config["mode"] == "spectator" else self.ban_opponent,
                     padx=12,
                 )
                 self.ban_button.pack(side="right", padx=(0, 8))
             else:
                 self.ban_button = None
-            self.report_button = tk.Button(
-                header,
-                text=self.app.ui_label("report"),
-                command=self.report_opponent,
-                padx=12,
-            )
+            if self.mode_config["mode"] == "spectator":
+                self.report_button = tk.Button(
+                    header,
+                    text=self.app.ui_label("spectate_target"),
+                    command=self.toggle_spectate_target,
+                    padx=12,
+                )
+            else:
+                self.report_button = tk.Button(
+                    header,
+                    text=self.app.ui_label("report"),
+                    command=self.report_opponent,
+                    padx=12,
+                )
             self.report_button.pack(side="right", padx=(0, 8))
         else:
             self.ban_button = None
@@ -1304,6 +1324,15 @@ class UnchessGame:
         )
         info_label.pack(anchor="w")
 
+        initial_state = self.mode_config.get("initial_state")
+        if initial_state is not None:
+            self.board = deep_copy_board(initial_state.get("board", self.board))
+            self.side_to_move = initial_state.get("side_to_move", self.side_to_move)
+            self.score_white = int(initial_state.get("score_white", self.score_white))
+            self.score_black = int(initial_state.get("score_black", self.score_black))
+            self.move_count = int(initial_state.get("move_count", self.move_count))
+            self.game_over = bool(initial_state.get("game_over", False))
+
         self.draw()
         self.start_turn()
 
@@ -1312,6 +1341,11 @@ class UnchessGame:
         self.game_over = True
         self.bot_paused = True
         self.pending_bot_move = None
+        if self.mode_config["mode"] == "spectator" and self.network_client is not None:
+            try:
+                self.network_client.send({"type": "admin_leave_spectate"})
+            except OSError:
+                pass
         self.container.destroy()
 
     def toggle_bot_pause(self):
@@ -1344,6 +1378,8 @@ class UnchessGame:
             return f"Bot - {self.mode_config['difficulty_label']}"
         if self.mode_config["mode"] == "bot_vs_bot":
             return f"{self.app.ui_label('bot_vs_bot')} - {self.mode_config['white_label']} / {self.mode_config['black_label']}"
+        if self.mode_config["mode"] == "spectator":
+            return self.app.ui_label("spectator")
         return self.app.ui_label("multiplayer")
 
     def color_label(self, color, upper=False):
@@ -1359,7 +1395,10 @@ class UnchessGame:
         if self.pause_button is not None:
             self.pause_button.configure(text=self.app.ui_label("resume") if self.bot_paused else self.app.ui_label("pause"))
         if self.report_button is not None:
-            self.report_button.configure(text=self.app.ui_label("report"))
+            if self.mode_config["mode"] == "spectator":
+                self.report_button.configure(text=self.app.ui_label("spectate_target"))
+            else:
+                self.report_button.configure(text=self.app.ui_label("report"))
         if self.ban_button is not None:
             self.ban_button.configure(text=self.app.ui_label("ban"))
         self.update_sidebar()
@@ -1589,6 +1628,15 @@ class UnchessGame:
             player_name = self.color_label(self.mode_config["player_color"], upper=True)
             room_code = self.mode_config.get("room_code", "??????")
             self.info_var.set(f"{self.info_var.get()}\n{self.app.ui_label('you')}: {player_name}\n{self.app.ui_label('room')}: {room_code}")
+        if self.mode_config["mode"] == "spectator":
+            room_code = self.mode_config.get("room_code", "??????")
+            host_name = self.mode_config.get("host_username") or "?"
+            guest_name = self.mode_config.get("guest_username") or "?"
+            target_slot = self.mode_config.get("ban_target_slot", "host")
+            target_name = host_name if target_slot == "host" else guest_name
+            self.info_var.set(
+                f"{self.info_var.get()}\n{self.app.ui_label('room')}: {room_code}\nHost: {host_name}\nGuest: {guest_name}\n{self.app.ui_label('spectate_target')}: {target_name}"
+            )
 
     def current_actor(self):
         return opposite(self.side_to_move)
@@ -1608,24 +1656,26 @@ class UnchessGame:
             return self.mode_config["player_color"] == "black"
         if self.mode_config["mode"] == "multiplayer":
             return self.mode_config["player_color"] == "black"
+        if self.mode_config["mode"] == "spectator":
+            return False
         return self.side_to_move == "white"
 
     def to_display_coords(self, row, col):
-        if self.mode_config["mode"] == "bot_vs_bot":
+        if self.mode_config["mode"] in {"bot_vs_bot", "spectator"}:
             return col, BOARD_SIZE - 1 - row
         if self.board_flipped():
             return BOARD_SIZE - 1 - row, BOARD_SIZE - 1 - col
         return row, col
 
     def from_display_coords(self, draw_row, draw_col):
-        if self.mode_config["mode"] == "bot_vs_bot":
+        if self.mode_config["mode"] in {"bot_vs_bot", "spectator"}:
             return BOARD_SIZE - 1 - draw_col, draw_row
         if self.board_flipped():
             return BOARD_SIZE - 1 - draw_row, BOARD_SIZE - 1 - draw_col
         return draw_row, draw_col
 
     def on_mouse_click(self, event):
-        if self.animating or self.game_over or self.is_bot_turn() or self.pending_network_move is not None or self.bot_thinking:
+        if self.animating or self.game_over or self.is_bot_turn() or self.pending_network_move is not None or self.bot_thinking or self.mode_config["mode"] == "spectator":
             return
         if self.mode_config["mode"] == "multiplayer" and not self.is_local_multiplayer_turn():
             return
@@ -2150,6 +2200,11 @@ class UnchessGame:
             self.draw()
             return
 
+        if self.mode_config["mode"] == "spectator":
+            self.status_var.set(self.app.ui_label("spectating_status"))
+            self.draw()
+            return
+
         if in_check:
             self.status_var.set("Sakk: a soron következő szín királya támadás alatt van, ezt a most kattintó játékosnak kell megoldania.")
         else:
@@ -2249,8 +2304,9 @@ class UnchessApp:
         self.server_host = settings["server_host"]
         self.server_port = settings["server_port"]
         self.user_name = settings["user_name"]
+        self.session_role = settings["session_role"]
         self.remember_token = settings["remember_token"]
-        self.is_admin = False
+        self.is_admin = self.session_role == "admin"
         self.language = settings["language"]
         self.auto_role_policy = settings["auto_role_policy"]
         self.bot_tempo = settings["bot_tempo"]
@@ -2263,15 +2319,16 @@ class UnchessApp:
         self.multiplayer_host_controls = None
         self.multiplayer_move_limit_var = None
         self.multiplayer_is_host = False
+        self.admin_rooms_cache = []
         self.pending_multiplayer_action = None
         self.auth_username_var = None
         self.auth_password_var = None
         self.auth_remember_var = None
-        self.reset_password_var = None
         self.delete_account_password_var = None
         self.delete_account_confirm_var = None
-        self.pending_reset_username = None
-        self.pending_reset_token = None
+        self.console_target_username_var = None
+        self.console_new_password_var = None
+        self.console_reason_var = None
         self.ignore_next_disconnect = False
         self.settings_button = None
         self.settings_parent = None
@@ -2319,6 +2376,7 @@ class UnchessApp:
             self.multiplayer_client.close()
             self.multiplayer_client = None
         self.multiplayer_room = None
+        self.admin_rooms_cache = []
         self.multiplayer_is_host = False
         self.multiplayer_status_var = None
         self.multiplayer_room_var = None
@@ -2337,9 +2395,15 @@ class UnchessApp:
 
     def show_multiplayer_entry(self):
         if self.user_name:
-            self.show_multiplayer_placeholder()
+            self.show_post_login_multiplayer_view()
         else:
             self.show_multiplayer_auth_menu()
+
+    def show_post_login_multiplayer_view(self):
+        if self.session_role == "console":
+            self.show_console_placeholder()
+            return
+        self.show_multiplayer_placeholder()
 
     def poll_network_events(self):
         if self.multiplayer_client is not None:
@@ -2655,22 +2719,6 @@ class UnchessApp:
             self.menu_button(row, self.ui_label("stored_login"), self.restore_saved_login).pack(fill="x", pady=4)
         tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
 
-    def show_password_reset_menu(self, username, reset_token):
-        self.current_screen_refresh = lambda u=username, t=reset_token: self.show_password_reset_menu(u, t)
-        self.pending_reset_username = username
-        self.pending_reset_token = reset_token
-        self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
-
-        tk.Label(frame, text=self.ui_label("password_reset"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
-        tk.Label(frame, text=f"{self.ui_label('account')}: {username}", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
-        self.reset_password_var = tk.StringVar()
-        tk.Entry(frame, textvariable=self.reset_password_var, font=("Segoe UI", 14), show="*", width=24).pack(pady=(0, 18))
-        self.menu_button(frame, self.ui_label("save_new_password"), self.submit_password_reset).pack(anchor="center")
-        tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_auth_menu, padx=12).pack(pady=(18, 0))
-
     def show_delete_account_menu(self):
         if not self.user_name:
             self.show_multiplayer_auth_menu()
@@ -2734,6 +2782,8 @@ class UnchessApp:
 
         self.menu_button(menu_card, self.ui_label("create_room"), self.multiplayer_create_room).pack(fill="x", pady=6)
         self.menu_button(menu_card, self.ui_label("join_room"), self.show_multiplayer_join_menu).pack(fill="x", pady=6)
+        if self.is_admin:
+            self.menu_button(menu_card, self.ui_label("active_rooms"), self.show_admin_rooms_menu).pack(fill="x", pady=6)
         self.menu_button(menu_card, self.ui_label("delete_account"), self.show_delete_account_menu).pack(fill="x", pady=6)
 
         tk.Label(
@@ -2747,6 +2797,78 @@ class UnchessApp:
         if self.user_name:
             tk.Button(frame, text=self.ui_label("logout"), command=self.submit_logout, padx=12).pack(pady=(18, 0))
         tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+
+    def show_console_placeholder(self):
+        self.current_screen_refresh = self.show_console_placeholder
+        self.clear_view()
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
+        frame.pack(fill="both", expand=True)
+        self.current_view = frame
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        tk.Label(
+            frame,
+            text=self.ui_label("console_title"),
+            font=("Segoe UI", 26, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(anchor="center", pady=(10, 8))
+
+        tk.Label(
+            frame,
+            text=f"{self.ui_label('logged_in')}: {self.user_name} ({self.ui_label('console_role')})",
+            font=("Segoe UI", 11, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(anchor="center", pady=(0, 16))
+
+        tk.Label(
+            frame,
+            text=self.ui_label("console_placeholder_text"),
+            font=("Segoe UI", 11),
+            bg=BG_COLOR,
+            fg="#5a5a5a",
+            wraplength=620,
+            justify="center",
+        ).pack(anchor="center", pady=(0, 20))
+
+        menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        menu_card.pack(anchor="center")
+        self.console_target_username_var = tk.StringVar()
+        self.console_new_password_var = tk.StringVar()
+        tk.Label(menu_card, text=self.ui_label("username"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Entry(menu_card, textvariable=self.console_target_username_var).pack(fill="x", pady=(0, 8))
+        tk.Label(menu_card, text=self.ui_label("new_password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Entry(menu_card, textvariable=self.console_new_password_var, show="*").pack(fill="x", pady=(0, 12))
+        self.menu_button(menu_card, self.ui_label("console_reset_password"), self.submit_console_password_reset).pack(fill="x", pady=4)
+        self.menu_button(menu_card, self.ui_label("console_delete_user"), self.submit_console_delete_user).pack(fill="x", pady=4)
+        reason_var = tk.StringVar()
+        self.console_reason_var = reason_var
+        tk.Label(menu_card, text=self.ui_label("reason"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w", pady=(10, 0))
+        tk.Entry(menu_card, textvariable=reason_var).pack(fill="x", pady=(0, 12))
+        self.menu_button(menu_card, self.ui_label("console_ban_user"), self.submit_console_ban_user).pack(fill="x", pady=4)
+        self.menu_button(menu_card, self.ui_label("console_unban_user"), self.submit_console_unban_user).pack(fill="x", pady=4)
+        self.menu_button(menu_card, self.ui_label("console_make_admin"), self.submit_console_make_admin).pack(fill="x", pady=4)
+        self.menu_button(menu_card, self.ui_label("console_remove_admin"), self.submit_console_remove_admin).pack(fill="x", pady=4)
+        self.menu_button(menu_card, self.ui_label("console_refresh"), self.request_console_snapshot).pack(fill="x", pady=8)
+
+        self.console_snapshot_var = tk.StringVar(value=self.ui_label("console_tools_soon"))
+        tk.Label(
+            menu_card,
+            textvariable=self.console_snapshot_var,
+            font=("Consolas", 10),
+            bg="#efe5d8",
+            fg=TEXT_COLOR,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(10, 0))
+
+        tk.Button(frame, text=self.ui_label("logout"), command=self.submit_logout, padx=12).pack(pady=(18, 0))
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+        self.request_console_snapshot()
 
     def multiplayer_create_room(self):
         try:
@@ -2809,6 +2931,9 @@ class UnchessApp:
         if not username or not password:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_username_password"))
             return
+        if not username_is_ascii_safe(username):
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("username_ascii_only"))
+            return
         try:
             self.ensure_multiplayer_connection()
             self.multiplayer_client.send({"type": "register", "username": username, "password": password})
@@ -2847,6 +2972,7 @@ class UnchessApp:
     def submit_logout(self):
         if self.multiplayer_client is None or not self.multiplayer_client.connected:
             self.user_name = ""
+            self.session_role = ""
             self.is_admin = False
             self.remember_token = ""
             self.save_settings()
@@ -2879,22 +3005,131 @@ class UnchessApp:
             }
         )
 
-    def submit_password_reset(self):
-        new_password = self.reset_password_var.get() if self.reset_password_var is not None else ""
-        if not self.pending_reset_username or not self.pending_reset_token or not new_password:
-            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("reset_data_missing"))
+    def submit_console_password_reset(self):
+        username = self.console_target_username_var.get().strip() if self.console_target_username_var is not None else ""
+        new_password = self.console_new_password_var.get() if self.console_new_password_var is not None else ""
+        if not username or not new_password:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_username_password"))
             return
         if self.multiplayer_client is None:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
             return
-        self.multiplayer_client.send(
-            {
-                "type": "reset_password",
-                "username": self.pending_reset_username,
-                "reset_token": self.pending_reset_token,
-                "new_password": new_password,
-            }
-        )
+        self.multiplayer_client.send({"type": "console_reset_password", "username": username, "new_password": new_password})
+
+    def submit_console_delete_user(self):
+        username = self.console_target_username_var.get().strip() if self.console_target_username_var is not None else ""
+        if not username:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        if self.multiplayer_client is None:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
+            return
+        if not messagebox.askyesno(self.ui_label("console_delete_user"), self.ui_label("console_delete_confirm")):
+            return
+        self.multiplayer_client.send({"type": "console_delete_user", "username": username})
+
+    def request_console_snapshot(self):
+        if self.multiplayer_client is None:
+            return
+        self.multiplayer_client.send({"type": "console_snapshot"})
+
+    def console_target_username(self):
+        return self.console_target_username_var.get().strip() if self.console_target_username_var is not None else ""
+
+    def submit_console_ban_user(self):
+        username = self.console_target_username()
+        if not username:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        reason = self.console_reason_var.get().strip() if self.console_reason_var is not None else ""
+        self.multiplayer_client.send({"type": "console_set_ban", "username": username, "is_banned": True, "reason": reason})
+
+    def submit_console_unban_user(self):
+        username = self.console_target_username()
+        if not username:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        self.multiplayer_client.send({"type": "console_set_ban", "username": username, "is_banned": False, "reason": ""})
+
+    def submit_console_make_admin(self):
+        username = self.console_target_username()
+        if not username:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        self.multiplayer_client.send({"type": "console_set_admin", "username": username, "is_admin": True})
+
+    def submit_console_remove_admin(self):
+        username = self.console_target_username()
+        if not username:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        self.multiplayer_client.send({"type": "console_set_admin", "username": username, "is_admin": False})
+
+    def render_console_snapshot(self, users):
+        if getattr(self, "console_snapshot_var", None) is None:
+            return
+        if not users:
+            self.console_snapshot_var.set(self.ui_label("console_empty_snapshot"))
+            return
+        lines = []
+        for record in users:
+            flags = []
+            if record.get("is_admin"):
+                flags.append("admin")
+            if record.get("is_banned"):
+                flags.append(f"banned:{record.get('ban_reason') or '-'}")
+            suffix = f" [{' | '.join(flags)}]" if flags else ""
+            lines.append(f"- {record.get('username', '?')}{suffix}")
+        self.console_snapshot_var.set("\n".join(lines))
+
+    def show_admin_rooms_menu(self, fetch=True):
+        self.current_screen_refresh = lambda: self.show_admin_rooms_menu(fetch=False)
+        self.clear_view()
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
+        frame.pack(fill="both", expand=True)
+        self.current_view = frame
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        tk.Label(frame, text=self.ui_label("active_rooms"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=self.ui_label("active_rooms_subtitle"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+
+        list_frame = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        list_frame.pack(anchor="center", fill="both", expand=True)
+
+        rooms = self.admin_rooms_cache
+        if not rooms:
+            tk.Label(list_frame, text=self.ui_label("no_active_rooms"), font=("Segoe UI", 11), bg="#efe5d8", fg="#5a5a5a").pack(anchor="center", pady=12)
+        else:
+            for room in rooms:
+                row = tk.Frame(list_frame, bg="#efe5d8", pady=6)
+                row.pack(fill="x")
+                status = self.ui_label("started") if room.get("started") else self.ui_label("waiting")
+                host = room.get("host_username") or "?"
+                guest = room.get("guest_username") or "?"
+                text = f"{room.get('room_code', '??????')} | {status} | {host} vs {guest} | {self.ui_label('moves')}: {room.get('move_count', 0)}"
+                tk.Label(row, text=text, font=("Consolas", 11), bg="#efe5d8", fg=TEXT_COLOR, anchor="w", justify="left").pack(side="left", fill="x", expand=True)
+                if room.get("started"):
+                    tk.Button(row, text=self.ui_label("spectate"), command=lambda c=room.get("room_code"): self.start_spectating_room(c), padx=10).pack(side="right")
+
+        action_row = tk.Frame(frame, bg=BG_COLOR)
+        action_row.pack(anchor="center", pady=(18, 0))
+        tk.Button(action_row, text=self.ui_label("refresh"), command=lambda: self.show_admin_rooms_menu(fetch=True), padx=12).pack(side="left", padx=4)
+        tk.Button(action_row, text=self.ui_label("back"), command=self.show_post_login_multiplayer_view, padx=12).pack(side="left", padx=4)
+        if fetch:
+            self.request_admin_rooms_snapshot()
+
+    def request_admin_rooms_snapshot(self):
+        if self.multiplayer_client is None:
+            return
+        self.multiplayer_client.send({"type": "admin_list_rooms"})
+
+    def start_spectating_room(self, room_code):
+        if self.multiplayer_client is None:
+            return
+        self.multiplayer_client.send({"type": "admin_spectate_room", "room_code": room_code})
 
     def report_opponent(self):
         if self.mode_config["mode"] != "multiplayer" or self.network_client is None:
@@ -2909,6 +3144,29 @@ class UnchessApp:
         if not messagebox.askyesno(self.ui_label("ban"), self.ui_label("confirm_ban")):
             return
         self.network_client.send({"type": "ban_player"})
+
+    def ban_spectated_target(self):
+        if self.mode_config["mode"] != "spectator" or self.network_client is None or not self.app.is_admin:
+            return
+        target_slot = self.mode_config.get("ban_target_slot")
+        if target_slot not in {"host", "guest"}:
+            return
+        if not messagebox.askyesno(self.ui_label("ban"), self.ui_label("confirm_ban")):
+            return
+        self.network_client.send(
+            {
+                "type": "admin_ban_room_player",
+                "room_code": self.mode_config.get("room_code", ""),
+                "target_slot": target_slot,
+            }
+        )
+
+    def toggle_spectate_target(self):
+        if self.mode_config["mode"] != "spectator":
+            return
+        current = self.mode_config.get("ban_target_slot", "host")
+        self.mode_config["ban_target_slot"] = "guest" if current == "host" else "host"
+        self.update_sidebar()
 
     def show_multiplayer_waiting_room(self, host, code="......"):
         self.current_screen_refresh = lambda h=host, c=code: self.show_multiplayer_waiting_room(h, c)
@@ -3109,15 +3367,15 @@ class UnchessApp:
             return
         if event_type == "login_success":
             self.user_name = event.get("username", "")
-            self.is_admin = bool(event.get("is_admin", False))
-            token = event.get("remember_token")
-            if token is not None:
-                self.remember_token = token
+            self.session_role = str(event.get("session_role", "player") or "player")
+            self.is_admin = self.session_role == "admin"
+            self.remember_token = str(event.get("remember_token", "") or "")
             self.save_settings()
-            self.show_multiplayer_placeholder()
+            self.show_post_login_multiplayer_view()
             return
         if event_type == "logout_success":
             self.user_name = ""
+            self.session_role = ""
             self.is_admin = False
             self.remember_token = ""
             self.save_settings()
@@ -3126,6 +3384,7 @@ class UnchessApp:
         if event_type == "delete_account_success":
             deleted_username = event.get("username", self.user_name)
             self.user_name = ""
+            self.session_role = ""
             self.is_admin = False
             self.remember_token = ""
             self.save_settings()
@@ -3135,6 +3394,7 @@ class UnchessApp:
             return
         if event_type == "force_logout":
             self.user_name = ""
+            self.session_role = ""
             self.is_admin = False
             self.remember_token = ""
             self.save_settings()
@@ -3142,19 +3402,9 @@ class UnchessApp:
             messagebox.showwarning("Multiplayer", event.get("message", "Kijelentkeztetve."))
             self.show_multiplayer_auth_menu()
             return
-        if event_type == "password_reset_required":
-            self.show_password_reset_menu(event.get("username", ""), event.get("reset_token", ""))
-            return
-        if event_type == "password_reset_success":
-            self.pending_reset_username = None
-            self.pending_reset_token = None
-            if self.reset_password_var is not None:
-                self.reset_password_var.set("")
-            messagebox.showinfo("Multiplayer", "Sikeres jelszócsere. Jelentkezz be az új jelszóval.")
-            self.show_multiplayer_auth_menu()
-            return
         if event_type == "banned":
             self.user_name = ""
+            self.session_role = ""
             self.is_admin = False
             self.remember_token = ""
             self.save_settings()
@@ -3167,6 +3417,32 @@ class UnchessApp:
         if event_type == "ban_success":
             messagebox.showinfo("Multiplayer", f"Játékos tiltva: {event.get('banned_username', 'ismeretlen')}")
             return
+        if event_type == "console_action_success":
+            if self.console_new_password_var is not None:
+                self.console_new_password_var.set("")
+            messagebox.showinfo(self.ui_label("console_title"), event.get("message", self.ui_label("console_action_done")))
+            return
+        if event_type == "console_snapshot":
+            self.render_console_snapshot(event.get("users", []))
+            return
+        if event_type == "admin_rooms_snapshot":
+            self.admin_rooms_cache = event.get("rooms", [])
+            if callable(self.current_screen_refresh):
+                refresh_name = getattr(self.current_screen_refresh, "__name__", "")
+                if refresh_name in {"<lambda>", "show_admin_rooms_menu"}:
+                    self.show_admin_rooms_menu(fetch=False)
+            return
+        if event_type == "spectate_started":
+            room = event.get("room", {})
+            game_state = event.get("game_state") or {}
+            self.start_spectator_game(room, game_state)
+            return
+        if event_type == "spectate_ended":
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "spectator":
+                message = event.get("message", self.ui_label("spectate_ended"))
+                messagebox.showinfo(self.ui_label("active_rooms"), message)
+                self.show_admin_rooms_menu(fetch=True)
+            return
         if event_type == "server_shutdown":
             message = event.get("message", "A szerver leáll.")
             immediate = bool(event.get("immediate"))
@@ -3178,6 +3454,9 @@ class UnchessApp:
                 return
             minutes = max(1, seconds_remaining // 60)
             messagebox.showwarning("Multiplayer", f"{message}\nHátralévő idő: ~{minutes} perc")
+            return
+        if event_type == "server_shutdown_cancelled":
+            messagebox.showinfo("Multiplayer", event.get("message", "A tervezett szerverleállás megszakítva."))
             return
         if event_type == "room_created":
             self.multiplayer_room = event["room"]
@@ -3216,6 +3495,11 @@ class UnchessApp:
         if event_type == "player_left":
             room = event["room"]
             self.multiplayer_room = room
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "spectator":
+                leaver = event.get("player_name", "A jÃ¡tÃ©kos")
+                messagebox.showinfo(self.ui_label("active_rooms"), f"{leaver} kilÃ©pett. A spectate leÃ¡llt.")
+                self.show_admin_rooms_menu(fetch=True)
+                return
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "multiplayer":
                 leaver = event.get("player_name", "Az ellenfél")
                 if event.get("game_was_started"):
@@ -3231,7 +3515,7 @@ class UnchessApp:
             self.show_multiplayer_placeholder()
             return
         if event_type == "move_broadcast":
-            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "multiplayer":
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] in {"multiplayer", "spectator"}:
                 self.current_view.apply_network_move(event)
 
     def menu_button(self, parent, text, command):
@@ -3653,11 +3937,28 @@ class UnchessApp:
                 "server_host": self.server_host,
                 "server_port": self.server_port,
                 "user_name": self.user_name,
+                "session_role": self.session_role,
                 "remember_token": self.remember_token,
                 "auto_role_policy": self.auto_role_policy,
                 "bot_tempo": self.bot_tempo,
                 "move_limit": self.default_move_limit,
                 "language": self.language,
+            }
+        )
+
+    def start_spectator_game(self, room, game_state):
+        self.start_game(
+            {
+                "mode": "spectator",
+                "difficulty": None,
+                "difficulty_label": None,
+                "network_client": self.multiplayer_client,
+                "room_code": room["room_code"],
+                "move_limit": room.get("move_limit", self.default_move_limit),
+                "initial_state": game_state,
+                "host_username": room.get("host_username"),
+                "guest_username": room.get("guest_username"),
+                "ban_target_slot": "host",
             }
         )
 
@@ -3745,6 +4046,22 @@ class UnchessApp:
                 "account": "Fiók",
                 "save_new_password": "Új jelszó mentése",
                 "logged_in": "Bejelentkezve",
+                "console_title": "Console",
+                "console_role": "console",
+                "console_placeholder_text": "Ez a console session kulon szerveroldali muveletekhez lesz fenntartva. A spectate es a meccsfigyeles nem ide tartozik.",
+                "console_tools_soon": "A console eszkozok ide kerulnek",
+                "new_password": "Uj jelszo",
+                "console_reset_password": "Jelszo reset",
+                "console_delete_user": "Fiok torlese",
+                "console_target_required": "Adj meg egy felhasznalonevet.",
+                "console_delete_confirm": "Biztosan torolni szeretned ezt a fiokot?",
+                "console_action_done": "Console muvelet sikeres.",
+                "console_ban_user": "Fiok tiltasa",
+                "console_unban_user": "Fiok feloldasa",
+                "console_make_admin": "Admin jog adasa",
+                "console_remove_admin": "Admin jog elvetele",
+                "console_refresh": "Frissites",
+                "console_empty_snapshot": "Nincs megjelenitheto fiok.",
                 "create_room": "Új játék létrehozása",
                 "join_room": "Csatlakozás meglévőhöz",
                 "logout": "Kijelentkezés",
@@ -3767,6 +4084,7 @@ class UnchessApp:
                 "enter_room_code_error": "Adj meg egy játékkódot.",
                 "server_connect_error": "Nem sikerült csatlakozni a szerverhez",
                 "enter_username_password": "Adj meg felhasználónevet és jelszót.",
+                "username_ascii_only": "A felhasználónév csak angol betűket, számokat, aláhúzást és kötőjelet tartalmazhat.",
                 "no_stored_login": "Nincs mentett belépés.",
                 "reset_data_missing": "A reset adatok hiányoznak.",
                 "no_active_server_connection": "Nincs aktív kapcsolat a szerverhez.",
@@ -3791,6 +4109,17 @@ class UnchessApp:
                 "passwords_do_not_match": "A két jelszó nem egyezik.",
                 "delete_account_confirm_prompt": "Biztosan végleg törölni szeretnéd a fiókodat?",
                 "delete_account_success": "Fiók törölve",
+                "active_rooms": "Aktiv szobak",
+                "active_rooms_subtitle": "Az admin itt tud belepni a futo meccsek megfigyeloi nezetebe.",
+                "no_active_rooms": "Jelenleg nincs aktiv szoba.",
+                "started": "Fut",
+                "waiting": "Var",
+                "spectate": "Nezes",
+                "refresh": "Frissites",
+                "spectator": "Spectator",
+                "spectating_status": "Megfigyeloi nezet. A jatek csak olvashato.",
+                "spectate_target": "Ban celpont",
+                "spectate_ended": "A spectate munkamenet befejezodott.",
             },
             "en": {
                 "choose_mode": "Choose game mode",
@@ -3844,6 +4173,22 @@ class UnchessApp:
                 "account": "Account",
                 "save_new_password": "Save new password",
                 "logged_in": "Logged in",
+                "console_title": "Console",
+                "console_role": "console",
+                "console_placeholder_text": "This console session is reserved for server-side account and moderation operations. Match spectating does not belong here.",
+                "console_tools_soon": "Console tools will appear here",
+                "new_password": "New password",
+                "console_reset_password": "Reset password",
+                "console_delete_user": "Delete account",
+                "console_target_required": "Enter a username.",
+                "console_delete_confirm": "Are you sure you want to delete this account?",
+                "console_action_done": "Console action completed.",
+                "console_ban_user": "Ban account",
+                "console_unban_user": "Unban account",
+                "console_make_admin": "Grant admin",
+                "console_remove_admin": "Remove admin",
+                "console_refresh": "Refresh",
+                "console_empty_snapshot": "There are no accounts to display.",
                 "create_room": "Create new game",
                 "join_room": "Join existing room",
                 "logout": "Logout",
@@ -3866,6 +4211,7 @@ class UnchessApp:
                 "enter_room_code_error": "Enter a room code.",
                 "server_connect_error": "Could not connect to the server",
                 "enter_username_password": "Enter a username and password.",
+                "username_ascii_only": "Usernames may only contain ASCII letters, numbers, underscores, and hyphens.",
                 "no_stored_login": "No stored login found.",
                 "reset_data_missing": "Reset data is missing.",
                 "no_active_server_connection": "There is no active server connection.",
@@ -3890,6 +4236,17 @@ class UnchessApp:
                 "passwords_do_not_match": "The two passwords do not match.",
                 "delete_account_confirm_prompt": "Are you sure you want to permanently delete your account?",
                 "delete_account_success": "Account deleted",
+                "active_rooms": "Active rooms",
+                "active_rooms_subtitle": "Admins can enter active matches here in spectator mode.",
+                "no_active_rooms": "There are no active rooms right now.",
+                "started": "Started",
+                "waiting": "Waiting",
+                "spectate": "Spectate",
+                "refresh": "Refresh",
+                "spectator": "Spectator",
+                "spectating_status": "Spectator view. This match is read-only.",
+                "spectate_target": "Ban target",
+                "spectate_ended": "The spectator session has ended.",
             },
         }
         lang = self.language if self.language in labels else "en"

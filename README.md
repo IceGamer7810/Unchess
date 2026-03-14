@@ -1,66 +1,76 @@
 # Unchess Client
 
-Az Unchess egy `tkinter`-es, fordított irányítású sakkjáték. A tábla és a bábumozgás sakk, de mindig az ellenfél bábuit mozgatod.
+`Unchess` is a `tkinter` reverse-control chess game. The board and piece movement follow chess rules, but you always move the side-to-move pieces for the other player.
 
-## Alapötlet
+## Core idea
 
-- A fehér játékos a fehérrel van, a fekete játékos a feketével.
-- Amikor `white` van soron, a fekete játékos lép a fehér bábukkal.
-- Amikor `black` van soron, a fehér játékos lép a fekete bábukkal.
-- A pont annak jár, akinek a színe ütött, nem annak, aki fizikailag kattintott.
+- White owns the white pieces, black owns the black pieces.
+- When `white` is to move, the black player clicks the white pieces.
+- When `black` is to move, the white player clicks the black pieces.
+- Points belong to the owner of the capturing piece, not the person physically clicking.
 
-Az Unchess lényege a kényszerhelyzetek felépítése: saját királyodnak menekülőhálót akarsz hagyni, az ellenfél királyát pedig úgy akarod szorítani, hogy rossz válaszokra kényszerüljön.
+The game is about building forced responses: keep escape routes for your own king while pushing the opponent into worse and worse answers.
 
-## Jelenlegi funkciók
+## Current features
 
-- teljes grafikus tábla `Canvas`-szal
-- Unicode sakkfigurák
-- animált lépések
-- sakkvizualizáció és kijelölés
-- pontozás
-- gyalogátalakulás
+- local singleplayer
+- local bot mode
+- local bot-vs-bot mode
+- dedicated TCP multiplayer
+- scalable window and board canvas
+- animated moves
+- check visualization
+- scoring
+- pawn promotion
 - undo / redo
-- bot mód
-- bot vs bot mód
-- dedikált szerveres TCP multiplayer
-- multiplayer account rendszer:
-  - regisztráció
+- settings overlay panel
+- live language switching for menus and the active game view
+- multiplayer account flow:
+  - register
   - login
   - logout
-  - maradjak bejelentkezve
-  - mesterkulcsos jelszó-reset kliensfolyam
-- multiplayer report gomb
-- admin accounttal közvetlen ban gomb multiplayer meccs közben
-- átméretezhető ablak, skálázódó játéktér
+  - stay signed in
+  - delete account
+- role-aware multiplayer UI:
+  - `player`: normal room creation / joining and reporting
+  - `admin`: player UI plus active room list, spectating, and direct bans
+  - `console`: server/account management UI after logging in with the console username and master key
 
-## Játékmódok
+## Game modes
 
 - `Singleplayer`
 - `Bot`
 - `Bot vs Bot`
 - `Multiplayer`
 
-Multiplayerben a kliens dedikált szerverhez csatlakozik. A meccs létrehozása és a csatlakozás után a szerver kezeli a szobát, a szerepkiosztást és a multiplayer állapotot.
+Multiplayer connects to the dedicated server. Room creation, joining, role selection, and move synchronization are all server-backed.
+Admins can inspect active matches through a spectator view. Console sessions are separated from match supervision and are reserved for account/server operations.
 
-## Beállítások
+## Settings
 
-A fogaskerék alatti panelből állítható:
+The gear panel lets you configure:
 
-- automatikus szerepválasztási policy
-- bot tempó
-- alap lépéslimit
-- multiplayer szerver host
-- multiplayer szerver port
+- language
+- auto role policy
+- bot tempo
+- default move limit
+- multiplayer host
+- multiplayer port
 
-Ezek a kliensoldali `settings.toml` fájlba mentődnek.
+These values are stored in `settings.toml`.
 
-Az új meccsek indítása előtt külön is megadható lépéslimit. A mező alapértéke a settingsben elmentett értékből jön.
+For new installs, the client detects the system language and defaults to:
 
-## Konfiguráció
+- `hu` for Hungarian locales
+- `en` otherwise
 
-Fájl: `settings.toml`
+Each new match can still override the move limit before start. The settings value is only the default prefilled value.
 
-Példa:
+## Config
+
+File: `settings.toml`
+
+Example:
 
 ```toml
 [client]
@@ -70,24 +80,28 @@ server_port = 7777
 [auth]
 user_name = ""
 remember_token = ""
+session_role = ""
 
 [gameplay]
 auto_role_policy = "ask"
 bot_tempo = "normal"
 move_limit = -1
+
+[ui]
+language = "en"
 ```
 
-Ha hiányzik, a kliens automatikusan létrehozza. A fájl `.gitignore` alatt van.
+If the file does not exist, the client creates it automatically. It is gitignored.
 
-## Fájlok
+## Files
 
-- `app.py`: kliens, GUI, helyi játékmotor, botok, multiplayer kliens
-- `settings.toml`: helyi kliensbeállítások
+- `app.py`: GUI, local game logic, bots, multiplayer client
+- `settings.toml`: local client settings
 
-## Futtatás
+## Run
 
 ```powershell
 python app.py
 ```
 
-Multiplayerhez a `settings.toml`-ban megadott hoston és porton futó dedikált szerver kell.
+Multiplayer requires a running dedicated server on the host and port configured in `settings.toml`.
