@@ -22,7 +22,8 @@ WINDOW_WIDTH = BOARD_PIXELS + SIDEBAR_WIDTH
 WINDOW_HEIGHT = BOARD_PIXELS + 70
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 7777
-SETTINGS_PATH = Path(".settings.toml")
+SETTINGS_PATH = Path("settings.toml")
+LEGACY_SETTINGS_PATH = Path(".settings.toml")
 
 LIGHT_SQUARE = "#f0d9b5"
 DARK_SQUARE = "#b58863"
@@ -114,6 +115,8 @@ def load_client_settings():
         "bot_tempo": "normal",
         "move_limit": -1,
     }
+    if not SETTINGS_PATH.exists() and LEGACY_SETTINGS_PATH.exists():
+        SETTINGS_PATH.write_text(LEGACY_SETTINGS_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     if not SETTINGS_PATH.exists():
         write_client_settings(defaults)
         return defaults.copy()

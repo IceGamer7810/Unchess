@@ -52,13 +52,13 @@ A fogaskerék alatti panelből állítható:
 - multiplayer szerver host
 - multiplayer szerver port
 
-Ezek a kliensoldali `.settings.toml` fájlba mentődnek.
+Ezek a kliensoldali `settings.toml` fájlba mentődnek.
 
 Az új meccsek indítása előtt külön is megadható lépéslimit. A mező alapértéke a settingsben elmentett értékből jön.
 
 ## Konfiguráció
 
-Fájl: `.settings.toml`
+Fájl: `settings.toml`
 
 Példa:
 
@@ -82,7 +82,7 @@ Ha hiányzik, a kliens automatikusan létrehozza. A fájl `.gitignore` alatt van
 ## Fájlok
 
 - `app.py`: kliens, GUI, helyi játékmotor, botok, multiplayer kliens
-- `.settings.toml`: helyi kliensbeállítások
+- `settings.toml`: helyi kliensbeállítások
 
 ## Futtatás
 
@@ -90,4 +90,4 @@ Ha hiányzik, a kliens automatikusan létrehozza. A fájl `.gitignore` alatt van
 python app.py
 ```
 
-Multiplayerhez a `.settings.toml`-ban megadott hoston és porton futó dedikált szerver kell.
+Multiplayerhez a `settings.toml`-ban megadott hoston és porton futó dedikált szerver kell.
