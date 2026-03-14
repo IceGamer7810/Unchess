@@ -1,4 +1,4 @@
-# Unchess
+# Unchess Client
 
 Az Unchess egy Pythonos, `tkinter`-es sakkprototípus, ahol a tábla és a bábumozgás sakk, de a vezérlés fordított: mindig az ellenfél bábuit mozgatod.
 
@@ -35,7 +35,7 @@ A pont annak a játékosnak jár, akinek a színe ütött, nem annak, aki fizika
 - undo / redo
 - bot mód
 - bot vs bot mód
-- helyi hálós / TCP-s multiplayer alap külön szerverrel
+- TCP-s multiplayer dedikált szerverhez
 - átméretezhető ablak, skálázódó játéktér
 
 ## Játékmódok
@@ -92,8 +92,6 @@ Minden új meccs indulása előtt külön megadható a lépéslimit is. Az ott l
 
 ## Konfiguráció
 
-### Kliens
-
 Fájl: `.settings.toml`
 
 Példa:
@@ -109,37 +107,17 @@ bot_tempo = "normal"
 move_limit = -1
 ```
 
-### Szerver
-
-Fájl: `.server.toml`
-
-Példa:
-
-```toml
-[server]
-host = "0.0.0.0"
-port = 7777
-```
-
-Mindkét fájl automatikusan létrejön, ha hiányzik. Ezek a fájlok `.gitignore` alatt vannak.
+Ha hiányzik, a kliens automatikusan létrehozza. A fájl `.gitignore` alatt van.
 
 ## Fájlok
 
 - `app.py`: kliens, GUI, játékmotor, botok
-- `server.py`: multiplayer TCP szerver
 - `.settings.toml`: kliens beállítások
-- `.server.toml`: szerver bind beállítások
 
 ## Futtatás
-
-Kliens:
 
 ```powershell
 python app.py
 ```
 
-Szerver:
-
-```powershell
-python server.py
-```
+Ha multiplayert akarsz használni, a kliens a dedikált szerverhez csatlakozik a `.settings.toml`-ban megadott hoston és porton.
