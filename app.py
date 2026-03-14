@@ -93,6 +93,9 @@ def write_client_settings(settings):
         "[client]\n"
         f'server_host = "{settings["server_host"]}"\n'
         f"server_port = {int(settings['server_port'])}\n\n"
+        "[auth]\n"
+        f'user_name = "{settings["user_name"]}"\n'
+        f'remember_token = "{settings["remember_token"]}"\n\n'
         "[gameplay]\n"
         f'auto_role_policy = "{settings["auto_role_policy"]}"\n'
         f'bot_tempo = "{settings["bot_tempo"]}"\n'
@@ -105,6 +108,8 @@ def load_client_settings():
     defaults = {
         "server_host": DEFAULT_SERVER_HOST,
         "server_port": DEFAULT_SERVER_PORT,
+        "user_name": "",
+        "remember_token": "",
         "auto_role_policy": "ask",
         "bot_tempo": "normal",
         "move_limit": -1,
@@ -121,12 +126,15 @@ def load_client_settings():
         return defaults.copy()
 
     client = data.get("client", {})
+    auth = data.get("auth", {})
     gameplay = data.get("gameplay", {})
     settings["server_host"] = str(client.get("server_host", defaults["server_host"]))
     try:
         settings["server_port"] = int(client.get("server_port", defaults["server_port"]))
     except (TypeError, ValueError):
         settings["server_port"] = defaults["server_port"]
+    settings["user_name"] = str(auth.get("user_name", defaults["user_name"]))
+    settings["remember_token"] = str(auth.get("remember_token", defaults["remember_token"]))
     settings["auto_role_policy"] = str(gameplay.get("auto_role_policy", defaults["auto_role_policy"]))
     settings["bot_tempo"] = str(gameplay.get("bot_tempo", defaults["bot_tempo"]))
     try:
@@ -2146,6 +2154,9 @@ class UnchessApp:
         settings = load_client_settings()
         self.server_host = settings["server_host"]
         self.server_port = settings["server_port"]
+        self.user_name = settings["user_name"]
+        self.remember_token = settings["remember_token"]
+        self.is_admin = False
         self.auto_role_policy = settings["auto_role_policy"]
         self.bot_tempo = settings["bot_tempo"]
         self.default_move_limit = settings["move_limit"]
@@ -2158,6 +2169,12 @@ class UnchessApp:
         self.multiplayer_move_limit_var = None
         self.multiplayer_is_host = False
         self.pending_multiplayer_action = None
+        self.auth_username_var = None
+        self.auth_password_var = None
+        self.auth_remember_var = None
+        self.reset_password_var = None
+        self.pending_reset_username = None
+        self.pending_reset_token = None
         self.ignore_next_disconnect = False
         self.settings_button = None
         self.settings_parent = None
@@ -2209,9 +2226,15 @@ class UnchessApp:
         if self.multiplayer_client is not None and self.multiplayer_client.connected:
             return
         client = MultiplayerClient(self.server_host, self.server_port)
-        client.connect()
+        client.connect(name=self.user_name or "Unchess Player")
         self.ignore_next_disconnect = False
         self.multiplayer_client = client
+
+    def show_multiplayer_entry(self):
+        if self.user_name:
+            self.show_multiplayer_placeholder()
+        else:
+            self.show_multiplayer_auth_menu()
 
     def poll_network_events(self):
         if self.multiplayer_client is not None:
@@ -2250,7 +2273,7 @@ class UnchessApp:
         menu_card.pack(anchor="center")
 
         self.menu_button(menu_card, "Singleplayer", self.start_singleplayer).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "Multiplayer", self.show_multiplayer_placeholder).pack(fill="x", pady=6)
+        self.menu_button(menu_card, "Multiplayer", self.show_multiplayer_entry).pack(fill="x", pady=6)
         self.menu_button(menu_card, "Bot", self.show_bot_menu).pack(fill="x", pady=6)
         self.menu_button(menu_card, "Bot vs Bot", self.show_bot_vs_bot_white_menu).pack(fill="x", pady=6)
 
@@ -2487,6 +2510,55 @@ class UnchessApp:
 
         tk.Button(frame, text="Vissza", command=self.show_bot_menu, padx=12).pack(pady=(18, 0))
 
+    def show_multiplayer_auth_menu(self):
+        self.clear_view()
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
+        frame.pack(fill="both", expand=True)
+        self.current_view = frame
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        tk.Label(frame, text="Multiplayer belépés", font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=f"Szerver: {self.server_host}:{self.server_port}", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+
+        self.auth_username_var = tk.StringVar(value=self.user_name)
+        self.auth_password_var = tk.StringVar()
+        self.auth_remember_var = tk.BooleanVar(value=bool(self.remember_token))
+
+        tk.Label(card, text="Felhasználónév", font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Entry(card, textvariable=self.auth_username_var, font=("Segoe UI", 12), width=28).pack(fill="x", pady=(4, 12))
+        tk.Label(card, text="Jelszó", font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Entry(card, textvariable=self.auth_password_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 10))
+        tk.Checkbutton(card, text="Maradjak bejelentkezve", variable=self.auth_remember_var, bg="#efe5d8", activebackground="#efe5d8").pack(anchor="w", pady=(0, 12))
+
+        row = tk.Frame(card, bg="#efe5d8")
+        row.pack(fill="x")
+        self.menu_button(row, "Belépés", self.submit_login).pack(fill="x", pady=4)
+        self.menu_button(row, "Regisztráció", self.submit_register).pack(fill="x", pady=4)
+        if self.remember_token:
+            self.menu_button(row, "Tárolt belépés", self.restore_saved_login).pack(fill="x", pady=4)
+        tk.Button(frame, text="Vissza", command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+
+    def show_password_reset_menu(self, username, reset_token):
+        self.pending_reset_username = username
+        self.pending_reset_token = reset_token
+        self.clear_view()
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
+        frame.pack(fill="both", expand=True)
+        self.current_view = frame
+
+        tk.Label(frame, text="Jelszó reset", font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=f"Fiók: {username}", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        self.reset_password_var = tk.StringVar()
+        tk.Entry(frame, textvariable=self.reset_password_var, font=("Segoe UI", 14), show="*", width=24).pack(pady=(0, 18))
+        self.menu_button(frame, "Új jelszó mentése", self.submit_password_reset).pack(anchor="center")
+        tk.Button(frame, text="Vissza", command=self.show_multiplayer_auth_menu, padx=12).pack(pady=(18, 0))
+
     def show_multiplayer_placeholder(self):
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
@@ -2515,6 +2587,10 @@ class UnchessApp:
             justify="center",
         ).pack(anchor="center", pady=(0, 24))
 
+        if self.user_name:
+            suffix = " (admin)" if self.is_admin else ""
+            tk.Label(frame, text=f"Bejelentkezve: {self.user_name}{suffix}", font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(0, 18))
+
         menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         menu_card.pack(anchor="center")
 
@@ -2529,6 +2605,8 @@ class UnchessApp:
             fg="#6a6a6a",
         ).pack(anchor="center", pady=(18, 0))
 
+        if self.user_name:
+            tk.Button(frame, text="Kijelentkezés", command=self.submit_logout, padx=12).pack(pady=(18, 0))
         tk.Button(frame, text="Vissza", command=self.show_main_menu, padx=12).pack(pady=(18, 0))
 
     def multiplayer_create_room(self):
@@ -2584,6 +2662,74 @@ class UnchessApp:
             self.multiplayer_client.send({"type": "join_room", "room_code": code})
         except OSError as exc:
             messagebox.showerror("Multiplayer", f"Nem sikerult csatlakozni a szerverhez: {exc}")
+
+    def submit_register(self):
+        username = (self.auth_username_var.get() if self.auth_username_var is not None else "").strip()
+        password = self.auth_password_var.get() if self.auth_password_var is not None else ""
+        if not username or not password:
+            messagebox.showerror("Multiplayer", "Adj meg felhasználónevet és jelszót.")
+            return
+        try:
+            self.ensure_multiplayer_connection()
+            self.multiplayer_client.send({"type": "register", "username": username, "password": password})
+        except OSError as exc:
+            messagebox.showerror("Multiplayer", f"Nem sikerült csatlakozni a szerverhez: {exc}")
+
+    def submit_login(self):
+        username = (self.auth_username_var.get() if self.auth_username_var is not None else "").strip()
+        password = self.auth_password_var.get() if self.auth_password_var is not None else ""
+        if not username or not password:
+            messagebox.showerror("Multiplayer", "Adj meg felhasználónevet és jelszót.")
+            return
+        try:
+            self.ensure_multiplayer_connection()
+            self.multiplayer_client.send(
+                {
+                    "type": "login",
+                    "username": username,
+                    "password": password,
+                    "remember_me": bool(self.auth_remember_var.get()) if self.auth_remember_var is not None else False,
+                }
+            )
+        except OSError as exc:
+            messagebox.showerror("Multiplayer", f"Nem sikerült csatlakozni a szerverhez: {exc}")
+
+    def restore_saved_login(self):
+        if not self.remember_token:
+            messagebox.showerror("Multiplayer", "Nincs mentett belépés.")
+            return
+        try:
+            self.ensure_multiplayer_connection()
+            self.multiplayer_client.send({"type": "restore_session", "remember_token": self.remember_token})
+        except OSError as exc:
+            messagebox.showerror("Multiplayer", f"Nem sikerült csatlakozni a szerverhez: {exc}")
+
+    def submit_logout(self):
+        if self.multiplayer_client is None or not self.multiplayer_client.connected:
+            self.user_name = ""
+            self.is_admin = False
+            self.remember_token = ""
+            self.save_settings()
+            self.show_multiplayer_auth_menu()
+            return
+        self.multiplayer_client.send({"type": "logout"})
+
+    def submit_password_reset(self):
+        new_password = self.reset_password_var.get() if self.reset_password_var is not None else ""
+        if not self.pending_reset_username or not self.pending_reset_token or not new_password:
+            messagebox.showerror("Multiplayer", "A reset adatok hiányoznak.")
+            return
+        if self.multiplayer_client is None:
+            messagebox.showerror("Multiplayer", "Nincs aktív kapcsolat a szerverhez.")
+            return
+        self.multiplayer_client.send(
+            {
+                "type": "reset_password",
+                "username": self.pending_reset_username,
+                "reset_token": self.pending_reset_token,
+                "new_password": new_password,
+            }
+        )
 
     def show_multiplayer_waiting_room(self, host, code="......"):
         self.multiplayer_is_host = host
@@ -2769,6 +2915,60 @@ class UnchessApp:
             elif self.pending_multiplayer_action and self.pending_multiplayer_action["kind"] == "create":
                 self.show_multiplayer_placeholder()
             self.pending_multiplayer_action = None
+            return
+        if event_type == "auth_error":
+            messagebox.showerror("Multiplayer", event.get("message", "Hitelesítési hiba"))
+            return
+        if event_type == "register_success":
+            self.user_name = event.get("username", self.user_name)
+            self.save_settings()
+            messagebox.showinfo("Multiplayer", f"Sikeres regisztráció: {self.user_name}")
+            return
+        if event_type == "login_success":
+            self.user_name = event.get("username", "")
+            self.is_admin = bool(event.get("is_admin", False))
+            token = event.get("remember_token")
+            if token is not None:
+                self.remember_token = token
+            self.save_settings()
+            self.show_multiplayer_placeholder()
+            return
+        if event_type == "logout_success":
+            self.user_name = ""
+            self.is_admin = False
+            self.remember_token = ""
+            self.save_settings()
+            self.show_multiplayer_auth_menu()
+            return
+        if event_type == "force_logout":
+            self.user_name = ""
+            self.is_admin = False
+            self.remember_token = ""
+            self.save_settings()
+            messagebox.showwarning("Multiplayer", event.get("message", "Kijelentkeztetve."))
+            self.show_multiplayer_auth_menu()
+            return
+        if event_type == "password_reset_required":
+            self.show_password_reset_menu(event.get("username", ""), event.get("reset_token", ""))
+            return
+        if event_type == "password_reset_success":
+            self.pending_reset_username = None
+            self.pending_reset_token = None
+            if self.reset_password_var is not None:
+                self.reset_password_var.set("")
+            messagebox.showinfo("Multiplayer", "Sikeres jelszócsere. Jelentkezz be az új jelszóval.")
+            self.show_multiplayer_auth_menu()
+            return
+        if event_type == "banned":
+            self.user_name = ""
+            self.is_admin = False
+            self.remember_token = ""
+            self.save_settings()
+            messagebox.showerror("Multiplayer", f"{event.get('message', 'A fiók tiltva van.')}\nVitatás: {event.get('appeal_email', 'appeal@example.com')}")
+            self.show_multiplayer_auth_menu()
+            return
+        if event_type == "report_success":
+            messagebox.showinfo("Multiplayer", f"Report elküldve: {event.get('reported_username', 'ismeretlen')}")
             return
         if event_type == "room_created":
             self.multiplayer_room = event["room"]
@@ -3214,6 +3414,8 @@ class UnchessApp:
             {
                 "server_host": self.server_host,
                 "server_port": self.server_port,
+                "user_name": self.user_name,
+                "remember_token": self.remember_token,
                 "auto_role_policy": self.auto_role_policy,
                 "bot_tempo": self.bot_tempo,
                 "move_limit": self.default_move_limit,
