@@ -69,18 +69,21 @@ class UnchessRequestHandler(socketserver.StreamRequestHandler):
         logging.info("Client connected from %s:%s", *self.client_address)
         self.send({"type": "hello_ack", "message": "Unchess server ready"})
 
-        while True:
-            raw = self.rfile.readline()
-            if not raw:
-                break
-            try:
-                message = json.loads(raw.decode("utf-8"))
-            except json.JSONDecodeError:
-                self.send({"type": "error", "message": "Invalid JSON"})
-                continue
-            self.server.handle_message(self, message)
-
-        self.server.disconnect_session(self)
+        try:
+            while True:
+                raw = self.rfile.readline()
+                if not raw:
+                    break
+                try:
+                    message = json.loads(raw.decode("utf-8"))
+                except json.JSONDecodeError:
+                    self.send({"type": "error", "message": "Invalid JSON"})
+                    continue
+                self.server.handle_message(self, message)
+        except (ConnectionResetError, BrokenPipeError, OSError) as exc:
+            logging.info("Client connection dropped from %s:%s (%s)", self.client_address[0], self.client_address[1], exc)
+        finally:
+            self.server.disconnect_session(self)
 
     def send(self, payload):
         encoded = (json.dumps(payload) + "\n").encode("utf-8")
@@ -103,6 +106,15 @@ class UnchessTCPServer(socketserver.ThreadingTCPServer):
     def register_session(self, session):
         with self.lock:
             self.sessions.add(session)
+
+    def safe_send(self, session, payload):
+        try:
+            session.send(payload)
+            return True
+        except (ConnectionResetError, BrokenPipeError, OSError) as exc:
+            name = self.session_names.get(session, "Unknown")
+            logging.info("Send failed to %s (%s)", name, exc)
+            return False
 
     def disconnect_session(self, session):
         with self.lock:
@@ -184,23 +196,23 @@ class UnchessTCPServer(socketserver.ThreadingTCPServer):
             self.rooms[code] = room
             self.session_rooms[session] = code
         logging.info("Room created: %s", code)
-        session.send({"type": "room_created", "room": room.to_payload()})
+        self.safe_send(session, {"type": "room_created", "room": room.to_payload()})
 
     def join_room(self, session, message):
         code = (message.get("room_code") or "").upper()
         with self.lock:
             room = self.rooms.get(code)
             if room is None:
-                session.send({"type": "error", "message": "Room not found"})
+                self.safe_send(session, {"type": "error", "message": "Room not found"})
                 return
             if room.guest is not None:
-                session.send({"type": "error", "message": "Room already full"})
+                self.safe_send(session, {"type": "error", "message": "Room already full"})
                 return
             room.guest = session
             self.session_rooms[session] = code
             guest_name = self.session_names.get(session, "Guest")
             logging.info("Room joined: %s by %s", code, guest_name)
-            session.send({"type": "room_joined", "room": room.to_payload()})
+            self.safe_send(session, {"type": "room_joined", "room": room.to_payload()})
             self.broadcast_room(room, {"type": "room_ready_for_role_choice", "room": room.to_payload()})
 
     def choose_role(self, session, message):
@@ -208,10 +220,10 @@ class UnchessTCPServer(socketserver.ThreadingTCPServer):
         with self.lock:
             room = self.rooms.get(code)
             if room is None or room.host != session:
-                session.send({"type": "error", "message": "Only the host can choose roles"})
+                self.safe_send(session, {"type": "error", "message": "Only the host can choose roles"})
                 return
             if room.guest is None:
-                session.send({"type": "error", "message": "Cannot choose role before guest joins"})
+                self.safe_send(session, {"type": "error", "message": "Cannot choose role before guest joins"})
                 return
             preference = message.get("preference", "random")
             try:
@@ -229,13 +241,13 @@ class UnchessTCPServer(socketserver.ThreadingTCPServer):
         with self.lock:
             room = self.rooms.get(code)
             if room is None or not room.started or room.role_assignment is None:
-                session.send({"type": "error", "message": "Game has not started"})
+                self.safe_send(session, {"type": "error", "message": "Game has not started"})
                 return
 
             actor = "black" if room.side_to_move == "white" else "white"
             expected_session = room.host if room.role_assignment["host"] == actor else room.guest
             if expected_session != session:
-                session.send({"type": "error", "message": "Not your turn"})
+                self.safe_send(session, {"type": "error", "message": "Not your turn"})
                 return
 
             room.side_to_move = "black" if room.side_to_move == "white" else "white"
@@ -255,9 +267,13 @@ class UnchessTCPServer(socketserver.ThreadingTCPServer):
         if payload["type"] == "game_start" and room.role_assignment and room.role_assignment["guest"] is None:
             room.role_assignment["guest"] = "black" if room.role_assignment["host"] == "white" else "white"
             payload["room"] = room.to_payload()
+        failed_sessions = []
         for session in (room.host, room.guest):
             if session is not None:
-                session.send(payload)
+                if not self.safe_send(session, payload):
+                    failed_sessions.append(session)
+        for session in failed_sessions:
+            self.disconnect_session(session)
 
 
 def main():

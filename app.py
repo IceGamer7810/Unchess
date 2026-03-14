@@ -2139,6 +2139,7 @@ class UnchessApp:
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.root.resizable(True, True)
         self.root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_app_close)
         self.current_view = None
         self.pending_bot_difficulty = None
         self.pending_bvb = {}
@@ -2174,8 +2175,15 @@ class UnchessApp:
         self.settings_anim_to_angle = 0.0
         self.settings_anim_from_scale = 1.0
         self.settings_anim_to_scale = 1.0
+        self.settings_move_limit_var = None
+        self.settings_host_var = None
+        self.settings_port_var = None
         self.root.after(120, self.poll_network_events)
         self.show_main_menu()
+
+    def on_app_close(self):
+        self.close_multiplayer_client()
+        self.root.destroy()
 
     def clear_view(self):
         self.close_settings_panel()
@@ -2349,6 +2357,8 @@ class UnchessApp:
         ).pack(anchor="w", pady=(2, 8))
 
         move_limit_var = tk.StringVar(value=str(self.default_move_limit))
+        self.settings_move_limit_var = move_limit_var
+        self.settings_move_limit_var = move_limit_var
         entry = tk.Entry(card, textvariable=move_limit_var, font=("Consolas", 18), justify="center", width=10)
         entry.pack(anchor="center", pady=(0, 16))
         entry.focus_set()
@@ -2972,14 +2982,37 @@ class UnchessApp:
             self.open_settings_panel()
 
     def close_settings_panel(self):
+        self.flush_settings_panel_inputs()
         if self.settings_panel is not None:
             self.root.unbind_all("<MouseWheel>")
             self.settings_panel.destroy()
             self.settings_panel = None
             self.settings_canvas = None
             self.settings_scrollable = None
+            self.settings_move_limit_var = None
+            self.settings_host_var = None
+            self.settings_port_var = None
         if self.settings_button is not None and not self.settings_hovered:
             self.draw_settings_icon(self.settings_button, self.settings_icon_angle, self.settings_icon_scale)
+
+    def flush_settings_panel_inputs(self):
+        if self.settings_move_limit_var is not None:
+            raw = self.settings_move_limit_var.get().strip()
+            if raw not in {"", "-"}:
+                try:
+                    self.default_move_limit = int(raw)
+                except ValueError:
+                    pass
+        if self.settings_host_var is not None and self.settings_port_var is not None:
+            host = self.settings_host_var.get().strip() or DEFAULT_SERVER_HOST
+            try:
+                port = int(self.settings_port_var.get().strip())
+            except ValueError:
+                port = None
+            if port is not None:
+                self.server_host = host
+                self.server_port = port
+        self.save_settings()
 
     def open_settings_panel(self):
         if self.settings_parent is None or self.settings_anchor_widget is None:
@@ -3126,6 +3159,7 @@ class UnchessApp:
         host_row.pack(fill="x", pady=(0, 6))
         tk.Label(host_row, text="Host", width=8, anchor="w", bg=BG_COLOR, fg=TEXT_COLOR).pack(side="left")
         host_var = tk.StringVar(value=self.server_host)
+        self.settings_host_var = host_var
         host_entry = tk.Entry(host_row, textvariable=host_var)
         host_entry.pack(side="left", fill="x", expand=True)
 
@@ -3133,6 +3167,7 @@ class UnchessApp:
         port_row.pack(fill="x", pady=(0, 6))
         tk.Label(port_row, text="Port", width=8, anchor="w", bg=BG_COLOR, fg=TEXT_COLOR).pack(side="left")
         port_var = tk.StringVar(value=str(self.server_port))
+        self.settings_port_var = port_var
         port_entry = tk.Entry(port_row, textvariable=port_var)
         port_entry.pack(side="left", fill="x", expand=True)
 
