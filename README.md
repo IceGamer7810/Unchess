@@ -1,80 +1,46 @@
 # Unchess Client
 
-Az Unchess egy Pythonos, `tkinter`-es sakkprototípus, ahol a tábla és a bábumozgás sakk, de a vezérlés fordított: mindig az ellenfél bábuit mozgatod.
+Az Unchess egy `tkinter`-es, fordított irányítású sakkjáték. A tábla és a bábumozgás sakk, de mindig az ellenfél bábuit mozgatod.
 
 ## Alapötlet
 
 - A fehér játékos a fehérrel van, a fekete játékos a feketével.
-- A cél továbbra is az ellenfél királyának mattot adni.
 - Amikor `white` van soron, a fekete játékos lép a fehér bábukkal.
 - Amikor `black` van soron, a fehér játékos lép a fekete bábukkal.
+- A pont annak jár, akinek a színe ütött, nem annak, aki fizikailag kattintott.
 
-Az Unchess lényege nem a sima támadás, hanem a kényszerhelyzet-manipuláció: olyan állásokat kell építeni, ahol az ellenfél rossz válaszokra kényszerül.
-
-## Pontozás
-
-Minden leütött bábu pontot ér:
-
-- gyalog: 1
-- huszár: 3
-- futó: 3
-- bástya: 5
-- vezér: 9
-
-A pont annak a játékosnak jár, akinek a színe ütött, nem annak, aki fizikailag kattintott.
+Az Unchess lényege a kényszerhelyzetek felépítése: saját királyodnak menekülőhálót akarsz hagyni, az ellenfél királyát pedig úgy akarod szorítani, hogy rossz válaszokra kényszerüljön.
 
 ## Jelenlegi funkciók
 
 - teljes grafikus tábla `Canvas`-szal
 - Unicode sakkfigurák
-- kattintásos kijelölés és lépéskiemelés
-- animált lépés
-- sakkvizualizáció
-- pontszámolás
+- animált lépések
+- sakkvizualizáció és kijelölés
+- pontozás
 - gyalogátalakulás
 - undo / redo
 - bot mód
 - bot vs bot mód
-- TCP-s multiplayer dedikált szerverhez
+- dedikált szerveres TCP multiplayer
+- multiplayer account rendszer:
+  - regisztráció
+  - login
+  - logout
+  - maradjak bejelentkezve
+  - mesterkulcsos jelszó-reset kliensfolyam
+- multiplayer report gomb
+- admin accounttal közvetlen ban gomb multiplayer meccs közben
 - átméretezhető ablak, skálázódó játéktér
 
 ## Játékmódok
 
-### Singleplayer
+- `Singleplayer`
+- `Bot`
+- `Bot vs Bot`
+- `Multiplayer`
 
-Két helyi játékos egy gépen.
-
-### Bot
-
-Nehézségek:
-
-- Könnyű
-- Normál
-- Nehéz
-- Verhetetlen
-
-Indulás előtt választható:
-
-- Fehér
-- Fekete
-- Random
-
-### Bot vs Bot
-
-Mindkét oldalhoz külön nehézség választható. Van `Pause / Resume`, és spectator nézetben fut.
-
-### Multiplayer
-
-Jelenleg tudja:
-
-- szoba létrehozása
-- meglévő szobához csatlakozás
-- lobby
-- host oldali szerepválasztás
-- lépésküldés TCP kapcsolaton
-- kilépés kezelése
-
-Ha az egyik fél meccs közben kilép, a másik győzelmet kap, a szoba bezárul.
+Multiplayerben a kliens dedikált szerverhez csatlakozik. A meccs létrehozása és a csatlakozás után a szerver kezeli a szobát, a szerepkiosztást és a multiplayer állapotot.
 
 ## Beállítások
 
@@ -86,9 +52,9 @@ A fogaskerék alatti panelből állítható:
 - multiplayer szerver host
 - multiplayer szerver port
 
-Ezek a kliens oldali `.settings.toml` fájlba mentődnek.
+Ezek a kliensoldali `.settings.toml` fájlba mentődnek.
 
-Minden új meccs indulása előtt külön megadható a lépéslimit is. Az ott látható mező alapértékét a settingsben elmentett alap lépéslimit adja.
+Az új meccsek indítása előtt külön is megadható lépéslimit. A mező alapértéke a settingsben elmentett értékből jön.
 
 ## Konfiguráció
 
@@ -101,6 +67,10 @@ Példa:
 server_host = "127.0.0.1"
 server_port = 7777
 
+[auth]
+user_name = ""
+remember_token = ""
+
 [gameplay]
 auto_role_policy = "ask"
 bot_tempo = "normal"
@@ -111,8 +81,8 @@ Ha hiányzik, a kliens automatikusan létrehozza. A fájl `.gitignore` alatt van
 
 ## Fájlok
 
-- `app.py`: kliens, GUI, játékmotor, botok
-- `.settings.toml`: kliens beállítások
+- `app.py`: kliens, GUI, helyi játékmotor, botok, multiplayer kliens
+- `.settings.toml`: helyi kliensbeállítások
 
 ## Futtatás
 
@@ -120,4 +90,4 @@ Ha hiányzik, a kliens automatikusan létrehozza. A fájl `.gitignore` alatt van
 python app.py
 ```
 
-Ha multiplayert akarsz használni, a kliens a dedikált szerverhez csatlakozik a `.settings.toml`-ban megadott hoston és porton.
+Multiplayerhez a `.settings.toml`-ban megadott hoston és porton futó dedikált szerver kell.

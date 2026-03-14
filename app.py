@@ -1127,6 +1127,7 @@ class UnchessGame:
         self.pause_button = None
         self.network_client = self.mode_config.get("network_client")
         self.pending_network_move = None
+        self.pending_network_sync = None
 
         self.status_var = tk.StringVar()
         self.score_var = tk.StringVar()
@@ -1164,6 +1165,21 @@ class UnchessGame:
             command=self.app.show_main_menu,
             padx=12,
         ).pack(side="right")
+
+        if self.mode_config["mode"] == "multiplayer":
+            if self.app.is_admin:
+                tk.Button(
+                    header,
+                    text="Ban",
+                    command=self.ban_opponent,
+                    padx=12,
+                ).pack(side="right", padx=(0, 8))
+            tk.Button(
+                header,
+                text="Report",
+                command=self.report_opponent,
+                padx=12,
+            ).pack(side="right", padx=(0, 8))
 
         if self.mode_config["mode"] == "bot_vs_bot":
             self.pause_button = tk.Button(
@@ -1954,6 +1970,7 @@ class UnchessGame:
             "promotion": move_payload["promotion"],
         }
         self.pending_network_move = None
+        self.pending_network_sync = payload
         self.execute_move(move)
 
     def finish_move(self, move, captured_piece):
@@ -1988,10 +2005,23 @@ class UnchessGame:
         }
         self.move_history.append(self.last_executed_move.copy())
         self.state_history.append(self.repetition_key(self.board, self.side_to_move))
+        server_sync = self.pending_network_sync
+        self.pending_network_sync = None
+        if server_sync is not None:
+            if "score_white" in server_sync:
+                self.score_white = server_sync["score_white"]
+            if "score_black" in server_sync:
+                self.score_black = server_sync["score_black"]
+            if "move_count" in server_sync:
+                self.move_count = server_sync["move_count"]
+            if "side_to_move" in server_sync:
+                self.side_to_move = server_sync["side_to_move"]
         self.animating = False
         self.animating_from = None
         self.draw()
         self.start_turn()
+        if server_sync is not None and server_sync.get("game_over") and not self.game_over:
+            self.end_game(server_sync.get("result_text", "A meccs véget ért."))
 
     def ask_promotion(self, color):
         choices = {
@@ -2731,6 +2761,20 @@ class UnchessApp:
             }
         )
 
+    def report_opponent(self):
+        if self.mode_config["mode"] != "multiplayer" or self.network_client is None:
+            return
+        if not messagebox.askyesno("Report", "Biztosan reportolni szeretnéd az ellenfelet?"):
+            return
+        self.network_client.send({"type": "report_player"})
+
+    def ban_opponent(self):
+        if self.mode_config["mode"] != "multiplayer" or self.network_client is None or not self.app.is_admin:
+            return
+        if not messagebox.askyesno("Ban", "Biztosan tiltani szeretnéd az ellenfelet?"):
+            return
+        self.network_client.send({"type": "ban_player"})
+
     def show_multiplayer_waiting_room(self, host, code="......"):
         self.multiplayer_is_host = host
         self.clear_view()
@@ -2945,6 +2989,7 @@ class UnchessApp:
             self.is_admin = False
             self.remember_token = ""
             self.save_settings()
+            self.close_multiplayer_client()
             messagebox.showwarning("Multiplayer", event.get("message", "Kijelentkeztetve."))
             self.show_multiplayer_auth_menu()
             return
@@ -2969,6 +3014,9 @@ class UnchessApp:
             return
         if event_type == "report_success":
             messagebox.showinfo("Multiplayer", f"Report elküldve: {event.get('reported_username', 'ismeretlen')}")
+            return
+        if event_type == "ban_success":
+            messagebox.showinfo("Multiplayer", f"Játékos tiltva: {event.get('banned_username', 'ismeretlen')}")
             return
         if event_type == "room_created":
             self.multiplayer_room = event["room"]
