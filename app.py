@@ -2615,6 +2615,7 @@ class UnchessApp:
         self.menu_button(menu_card, self.ui_label("multiplayer"), self.show_multiplayer_entry).pack(fill="x", pady=6)
         self.menu_button(menu_card, self.ui_label("bot"), self.show_bot_menu).pack(fill="x", pady=6)
         self.menu_button(menu_card, self.ui_label("bot_vs_bot"), self.show_bot_vs_bot_white_menu).pack(fill="x", pady=6)
+        self.menu_button(menu_card, "MOD TEST: Console UI", self.show_console_placeholder).pack(fill="x", pady=6)
 
         tk.Label(
             frame,
