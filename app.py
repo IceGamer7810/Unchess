@@ -1538,6 +1538,7 @@ class UnchessGame:
         self.draw_board()
         self.draw_pieces()
         self.update_sidebar()
+        self.refresh_admin_actions()
 
     def on_canvas_resize(self, _event):
         if not self.animating:
