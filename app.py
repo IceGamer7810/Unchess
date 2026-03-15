@@ -2615,7 +2615,7 @@ class UnchessApp:
         self.menu_button(menu_card, self.ui_label("multiplayer"), self.show_multiplayer_entry).pack(fill="x", pady=6)
         self.menu_button(menu_card, self.ui_label("bot"), self.show_bot_menu).pack(fill="x", pady=6)
         self.menu_button(menu_card, self.ui_label("bot_vs_bot"), self.show_bot_vs_bot_white_menu).pack(fill="x", pady=6)
-        self.menu_button(menu_card, "MOD TEST: Console UI", self.show_console_placeholder).pack(fill="x", pady=6)
+        self.menu_button(menu_card, "MOD TEST: Console UI", self.show_modded_console_test).pack(fill="x", pady=6)
 
         tk.Label(
             frame,
@@ -2624,6 +2624,18 @@ class UnchessApp:
             bg=BG_COLOR,
             fg="#6a6a6a",
         ).pack(anchor="center", pady=(20, 0))
+
+    def show_modded_console_test(self):
+        self.console_users_cache = [
+            {
+                "username": "IceGamer7810",
+                "is_admin": True,
+                "is_banned": False,
+                "can_report": True,
+                "ban_reason": "",
+            }
+        ]
+        self.show_console_player_list()
 
     def show_startup_account_prompt(self):
         self.auth_target_screen = "main"
@@ -3577,10 +3589,7 @@ class UnchessApp:
         if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
-        if self.multiplayer_client is None:
-            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
-            return
-        self.multiplayer_client.send({"type": "console_reset_password", "username": username, "new_password": new_password})
+        self.send_console_test_payload({"type": "console_reset_password", "username": username, "new_password": new_password})
 
     def submit_console_delete_user(self):
         username = self.console_selected_username.strip()
@@ -3590,18 +3599,25 @@ class UnchessApp:
         if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
-        if self.multiplayer_client is None:
-            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
-            return
-        self.multiplayer_client.send({"type": "console_delete_user", "username": username})
+        self.send_console_test_payload({"type": "console_delete_user", "username": username})
 
     def request_console_snapshot(self):
-        if self.multiplayer_client is None:
-            return
-        self.multiplayer_client.send({"type": "console_snapshot"})
+        self.send_console_test_payload({"type": "console_snapshot"})
 
     def console_target_username(self):
         return self.console_selected_username.strip()
+
+    def send_console_test_payload(self, payload):
+        try:
+            self.ensure_multiplayer_connection()
+        except OSError as exc:
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
+            return False
+        if self.multiplayer_client is None:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
+            return False
+        self.multiplayer_client.send(payload)
+        return True
 
     def submit_console_ban_user(self):
         username = self.console_target_username()
@@ -3612,7 +3628,7 @@ class UnchessApp:
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
         reason = self.console_reason_var.get().strip() if self.console_reason_var is not None else ""
-        self.multiplayer_client.send({"type": "console_set_ban", "username": username, "is_banned": True, "reason": reason})
+        self.send_console_test_payload({"type": "console_set_ban", "username": username, "is_banned": True, "reason": reason})
 
     def submit_console_unban_user(self):
         username = self.console_target_username()
@@ -3622,7 +3638,7 @@ class UnchessApp:
         if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
-        self.multiplayer_client.send({"type": "console_set_ban", "username": username, "is_banned": False, "reason": ""})
+        self.send_console_test_payload({"type": "console_set_ban", "username": username, "is_banned": False, "reason": ""})
 
     def submit_console_make_admin(self):
         username = self.console_target_username()
@@ -3632,7 +3648,7 @@ class UnchessApp:
         if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
-        self.multiplayer_client.send({"type": "console_set_admin", "username": username, "is_admin": True})
+        self.send_console_test_payload({"type": "console_set_admin", "username": username, "is_admin": True})
 
     def submit_console_remove_admin(self):
         username = self.console_target_username()
@@ -3642,7 +3658,7 @@ class UnchessApp:
         if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
-        self.multiplayer_client.send({"type": "console_set_admin", "username": username, "is_admin": False})
+        self.send_console_test_payload({"type": "console_set_admin", "username": username, "is_admin": False})
 
     def submit_console_grant_report(self):
         username = self.console_target_username()
@@ -3652,7 +3668,7 @@ class UnchessApp:
         if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
-        self.multiplayer_client.send({"type": "console_set_report_permission", "username": username, "can_report": True})
+        self.send_console_test_payload({"type": "console_set_report_permission", "username": username, "can_report": True})
 
     def submit_console_revoke_report(self):
         username = self.console_target_username()
@@ -3662,7 +3678,7 @@ class UnchessApp:
         if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
-        self.multiplayer_client.send({"type": "console_set_report_permission", "username": username, "can_report": False})
+        self.send_console_test_payload({"type": "console_set_report_permission", "username": username, "can_report": False})
 
     def render_console_snapshot(self, users):
         self.console_users_cache = [record for record in users if isinstance(record, dict)]
