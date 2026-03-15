@@ -2366,6 +2366,11 @@ class UnchessApp:
         self.console_target_username_var = None
         self.console_new_password_var = None
         self.console_reason_var = None
+        self.console_users_cache = []
+        self.console_search_var = None
+        self.console_list_container = None
+        self.console_selected_username = ""
+        self.console_action_confirm_var = None
         self.ignore_next_disconnect = False
         self.settings_button = None
         self.settings_parent = None
@@ -2395,6 +2400,10 @@ class UnchessApp:
         self.account_prompt_password_var = None
         self.profile_delete_back = None
         self.current_screen_refresh = None
+        self.current_scroll_canvas = None
+        self.root.bind_all("<MouseWheel>", self.on_global_mousewheel, add="+")
+        self.root.bind_all("<Button-4>", self.on_global_mousewheel, add="+")
+        self.root.bind_all("<Button-5>", self.on_global_mousewheel, add="+")
         self.root.after(120, self.poll_network_events)
         self.bootstrap_app()
 
@@ -2418,10 +2427,70 @@ class UnchessApp:
         if self.current_view is not None:
             self.current_view.destroy()
             self.current_view = None
+        self.current_scroll_canvas = None
         self.profile_button = None
         self.profile_anchor_widget = None
         self.settings_button = None
         self.settings_anchor_widget = None
+
+    def create_scrollable_view(self, padx=40, pady=36):
+        shell = tk.Frame(self.root, bg=BG_COLOR)
+        shell.pack(fill="both", expand=True)
+        canvas = tk.Canvas(shell, bg=BG_COLOR, highlightthickness=0, bd=0)
+        scrollbar = tk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas, bg=BG_COLOR, padx=padx, pady=pady)
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def sync_scrollbar():
+            shell.update_idletasks()
+            bbox = canvas.bbox("all")
+            canvas.configure(scrollregion=bbox)
+            needs_scroll = inner.winfo_reqheight() > canvas.winfo_height() + 1
+            if needs_scroll:
+                if not scrollbar.winfo_ismapped():
+                    scrollbar.pack(side="right", fill="y")
+            elif scrollbar.winfo_ismapped():
+                scrollbar.pack_forget()
+
+        def on_inner_configure(_event=None):
+            sync_scrollbar()
+
+        def on_canvas_configure(event):
+            canvas.itemconfigure(window_id, width=event.width)
+            sync_scrollbar()
+
+        inner.bind("<Configure>", on_inner_configure)
+        canvas.bind("<Configure>", on_canvas_configure)
+        self.current_view = shell
+        self.current_scroll_canvas = canvas
+        return inner
+
+    def on_global_mousewheel(self, event):
+        canvas = self.current_scroll_canvas
+        if canvas is None:
+            return
+        try:
+            if not int(canvas.winfo_exists()):
+                self.current_scroll_canvas = None
+                return
+        except tk.TclError:
+            self.current_scroll_canvas = None
+            return
+        bbox = canvas.bbox("all")
+        if not bbox:
+            return
+        if event.num == 4:
+            delta = -1
+        elif event.num == 5:
+            delta = 1
+        else:
+            raw_delta = getattr(event, "delta", 0)
+            if raw_delta == 0:
+                return
+            delta = -1 * int(raw_delta / 120 if raw_delta % 120 == 0 else (1 if raw_delta > 0 else -1))
+        canvas.yview_scroll(delta, "units")
 
     def refresh_current_view_language(self):
         if isinstance(self.current_view, UnchessGame):
@@ -2454,6 +2523,8 @@ class UnchessApp:
         self.remember_token = ""
         self.session_confirmed = False
         self.profile_stats = default_profile_stats()
+        self.console_users_cache = []
+        self.console_selected_username = ""
         self.save_settings()
 
     def has_confirmed_account(self):
@@ -2474,7 +2545,10 @@ class UnchessApp:
         if self.auth_target_screen == "multiplayer":
             self.show_post_login_multiplayer_view()
         else:
-            self.show_main_menu()
+            if self.session_role == "console":
+                self.show_console_placeholder()
+            else:
+                self.show_main_menu()
 
     def ensure_multiplayer_connection(self):
         if self.multiplayer_client is not None and self.multiplayer_client.connected:
@@ -2507,11 +2581,12 @@ class UnchessApp:
         self.root.after(120, self.poll_network_events)
 
     def show_main_menu(self):
+        if self.has_confirmed_account() and self.session_role == "console":
+            self.show_console_placeholder()
+            return
         self.current_screen_refresh = self.show_main_menu
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -2553,9 +2628,7 @@ class UnchessApp:
         self.auth_target_screen = "main"
         self.current_screen_refresh = self.show_startup_account_prompt
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -2624,9 +2697,7 @@ class UnchessApp:
         self.auth_target_screen = "main"
         self.current_screen_refresh = lambda m=mode: self.show_startup_auth_menu(m)
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -2653,10 +2724,18 @@ class UnchessApp:
         self.auth_password_var = self.account_prompt_password_var
         self.auth_remember_var = tk.BooleanVar(value=True if mode == "login" else False)
 
+        submit_action = self.submit_login if mode == "login" else self.submit_register
         tk.Label(card, text=self.ui_label("username"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
-        tk.Entry(card, textvariable=self.auth_username_var, font=("Segoe UI", 12), width=28).pack(fill="x", pady=(4, 12))
+        username_entry = tk.Entry(card, textvariable=self.auth_username_var, font=("Segoe UI", 12), width=28)
+        username_entry.pack(fill="x", pady=(4, 12))
         tk.Label(card, text=self.ui_label("password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
-        tk.Entry(card, textvariable=self.auth_password_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 10))
+        password_entry = tk.Entry(card, textvariable=self.auth_password_var, font=("Segoe UI", 12), show="*", width=28)
+        password_entry.pack(fill="x", pady=(4, 10))
+        username_entry.bind("<Return>", lambda _event: submit_action())
+        password_entry.bind("<Return>", lambda _event: submit_action())
+        username_entry.focus_set()
+        if self.auth_username_var.get().strip():
+            password_entry.focus_set()
         if mode == "login":
             tk.Checkbutton(card, text=self.ui_label("remember_me"), variable=self.auth_remember_var, bg="#efe5d8", activebackground="#efe5d8").pack(anchor="w", pady=(0, 12))
             self.menu_button(card, self.ui_label("login"), self.submit_login).pack(fill="x", pady=4)
@@ -2693,9 +2772,7 @@ class UnchessApp:
     def show_bot_menu(self):
         self.current_screen_refresh = self.show_bot_menu
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -2748,9 +2825,7 @@ class UnchessApp:
     def show_match_options(self, title, subtitle, start_callback, back_callback):
         self.current_screen_refresh = lambda: self.show_match_options(title, subtitle, start_callback, back_callback)
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -2814,9 +2889,7 @@ class UnchessApp:
     def show_bot_vs_bot_selector(self, color):
         self.current_screen_refresh = lambda c=color: self.show_bot_vs_bot_selector(c)
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -2886,9 +2959,7 @@ class UnchessApp:
             )
             return
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -2923,9 +2994,7 @@ class UnchessApp:
         self.auth_target_screen = "multiplayer"
         self.current_screen_refresh = lambda m=mode: self.show_multiplayer_auth_menu(m)
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -2942,10 +3011,18 @@ class UnchessApp:
         self.auth_password_var = tk.StringVar()
         self.auth_remember_var = tk.BooleanVar(value=bool(self.remember_token) if mode == "login" else False)
 
+        submit_action = self.submit_login if mode == "login" else self.submit_register
         tk.Label(card, text=self.ui_label("username"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
-        tk.Entry(card, textvariable=self.auth_username_var, font=("Segoe UI", 12), width=28).pack(fill="x", pady=(4, 12))
+        username_entry = tk.Entry(card, textvariable=self.auth_username_var, font=("Segoe UI", 12), width=28)
+        username_entry.pack(fill="x", pady=(4, 12))
         tk.Label(card, text=self.ui_label("password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
-        tk.Entry(card, textvariable=self.auth_password_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 10))
+        password_entry = tk.Entry(card, textvariable=self.auth_password_var, font=("Segoe UI", 12), show="*", width=28)
+        password_entry.pack(fill="x", pady=(4, 10))
+        username_entry.bind("<Return>", lambda _event: submit_action())
+        password_entry.bind("<Return>", lambda _event: submit_action())
+        username_entry.focus_set()
+        if self.auth_username_var.get().strip():
+            password_entry.focus_set()
         if mode == "login":
             tk.Checkbutton(card, text=self.ui_label("remember_me"), variable=self.auth_remember_var, bg="#efe5d8", activebackground="#efe5d8").pack(anchor="w", pady=(0, 12))
             self.menu_button(card, self.ui_label("login"), self.submit_login).pack(fill="x", pady=4)
@@ -2992,9 +3069,7 @@ class UnchessApp:
             return
         self.current_screen_refresh = self.show_delete_account_menu
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         tk.Label(frame, text=self.ui_label("delete_account"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
         tk.Label(frame, text=self.ui_label("delete_account_warning"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a", wraplength=560, justify="center").pack(anchor="center", pady=(0, 18))
@@ -3015,9 +3090,7 @@ class UnchessApp:
     def show_multiplayer_placeholder(self):
         self.current_screen_refresh = self.show_multiplayer_placeholder
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -3067,9 +3140,7 @@ class UnchessApp:
     def show_console_placeholder(self):
         self.current_screen_refresh = self.show_console_placeholder
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -3103,38 +3174,245 @@ class UnchessApp:
 
         menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         menu_card.pack(anchor="center")
-        self.console_target_username_var = tk.StringVar()
-        self.console_new_password_var = tk.StringVar()
-        tk.Label(menu_card, text=self.ui_label("username"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
-        tk.Entry(menu_card, textvariable=self.console_target_username_var).pack(fill="x", pady=(0, 8))
-        tk.Label(menu_card, text=self.ui_label("new_password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
-        tk.Entry(menu_card, textvariable=self.console_new_password_var, show="*").pack(fill="x", pady=(0, 12))
-        self.menu_button(menu_card, self.ui_label("console_reset_password"), self.submit_console_password_reset).pack(fill="x", pady=4)
-        self.menu_button(menu_card, self.ui_label("console_delete_user"), self.submit_console_delete_user).pack(fill="x", pady=4)
-        reason_var = tk.StringVar()
-        self.console_reason_var = reason_var
-        tk.Label(menu_card, text=self.ui_label("reason"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w", pady=(10, 0))
-        tk.Entry(menu_card, textvariable=reason_var).pack(fill="x", pady=(0, 12))
-        self.menu_button(menu_card, self.ui_label("console_ban_user"), self.submit_console_ban_user).pack(fill="x", pady=4)
-        self.menu_button(menu_card, self.ui_label("console_unban_user"), self.submit_console_unban_user).pack(fill="x", pady=4)
-        self.menu_button(menu_card, self.ui_label("console_make_admin"), self.submit_console_make_admin).pack(fill="x", pady=4)
-        self.menu_button(menu_card, self.ui_label("console_remove_admin"), self.submit_console_remove_admin).pack(fill="x", pady=4)
-        self.menu_button(menu_card, self.ui_label("console_refresh"), self.request_console_snapshot).pack(fill="x", pady=8)
-
-        self.console_snapshot_var = tk.StringVar(value=self.ui_label("console_tools_soon"))
+        self.menu_button(menu_card, self.ui_label("player_list"), self.show_console_player_list).pack(fill="x", pady=4)
+        self.menu_button(menu_card, self.ui_label("console_refresh"), self.request_console_snapshot).pack(fill="x", pady=4)
         tk.Label(
             menu_card,
-            textvariable=self.console_snapshot_var,
-            font=("Consolas", 10),
+            text=self.ui_label("console_tools_soon"),
+            font=("Segoe UI", 10),
             bg="#efe5d8",
-            fg=TEXT_COLOR,
-            justify="left",
-            anchor="w",
-        ).pack(fill="x", pady=(10, 0))
+            fg="#6a6a6a",
+            wraplength=420,
+            justify="center",
+        ).pack(anchor="center", pady=(10, 0))
 
         tk.Button(frame, text=self.ui_label("logout"), command=self.submit_logout, padx=12).pack(pady=(18, 0))
-        tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
-        self.request_console_snapshot()
+
+    def sorted_console_users(self):
+        users = []
+        for record in self.console_users_cache:
+            username = str(record.get("username", "") or "")
+            if not username or self.session_role == "console" and username == self.user_name:
+                continue
+            users.append(record)
+        admins = sorted((u for u in users if u.get("is_admin")), key=lambda item: item.get("username", ""))
+        regulars = sorted((u for u in users if not u.get("is_admin")), key=lambda item: item.get("username", ""))
+        return admins + regulars
+
+    def filtered_console_users(self):
+        query = (self.console_search_var.get() if self.console_search_var is not None else "").strip().lower()
+        users = self.sorted_console_users()
+        if not query:
+            return users
+        return [record for record in users if query in str(record.get("username", "")).lower()]
+
+    def show_console_player_list(self):
+        self.current_screen_refresh = self.show_console_player_list
+        self.clear_view()
+        frame = self.create_scrollable_view()
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        tk.Label(frame, text=self.ui_label("player_list"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=self.ui_label("console_players_subtitle"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a", wraplength=620, justify="center").pack(anchor="center", pady=(0, 18))
+
+        search_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18)
+        search_card.pack(anchor="center", fill="x")
+        tk.Label(search_card, text=self.ui_label("search"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        self.console_search_var = tk.StringVar()
+        search_entry = tk.Entry(search_card, textvariable=self.console_search_var, font=("Segoe UI", 12))
+        search_entry.pack(fill="x", pady=(6, 0))
+        search_entry.focus_set()
+
+        list_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18)
+        list_card.pack(anchor="center", fill="both", expand=True, pady=(14, 0))
+        self.console_list_container = list_card
+        self.console_search_var.trace_add("write", lambda *_args: self.render_console_player_rows())
+        self.render_console_player_rows()
+
+        action_row = tk.Frame(frame, bg=BG_COLOR)
+        action_row.pack(anchor="center", pady=(18, 0))
+        tk.Button(action_row, text=self.ui_label("console_refresh"), command=self.request_console_snapshot, padx=12).pack(side="left", padx=4)
+        tk.Button(action_row, text=self.ui_label("back"), command=self.show_console_placeholder, padx=12).pack(side="left", padx=4)
+
+    def render_console_player_rows(self):
+        if self.console_list_container is None:
+            return
+        for child in self.console_list_container.winfo_children():
+            child.destroy()
+        users = self.filtered_console_users()
+        if not users:
+            tk.Label(self.console_list_container, text=self.ui_label("console_empty_snapshot"), font=("Segoe UI", 11), bg="#efe5d8", fg="#5a5a5a").pack(anchor="center", pady=12)
+            return
+        for record in users:
+            username = str(record.get("username", "?"))
+            status_bits = []
+            if record.get("is_admin"):
+                status_bits.append(self.ui_label("admin"))
+            if record.get("is_banned"):
+                status_bits.append(self.ui_label("banned"))
+            suffix = f" [{', '.join(status_bits)}]" if status_bits else ""
+            row = tk.Frame(self.console_list_container, bg="#efe5d8", pady=4)
+            row.pack(fill="x")
+            tk.Button(
+                row,
+                text=f"{username}{suffix}",
+                command=lambda u=username: self.show_console_account_details(u),
+                font=("Consolas", 11),
+                bg="#f7efe4",
+                fg=TEXT_COLOR,
+                relief="raised",
+                cursor="hand2",
+                anchor="w",
+                padx=12,
+                pady=8,
+            ).pack(fill="x")
+
+    def find_console_user(self, username):
+        for record in self.console_users_cache:
+            if str(record.get("username", "")).lower() == str(username).lower():
+                return record
+        return None
+
+    def show_console_account_details(self, username):
+        record = self.find_console_user(username)
+        if record is None:
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_target_required"))
+            return
+        self.console_selected_username = str(record.get("username", username))
+        self.current_screen_refresh = lambda u=self.console_selected_username: self.show_console_account_details(u)
+        self.clear_view()
+        frame = self.create_scrollable_view()
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        tk.Label(frame, text=self.console_selected_username, font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        details = []
+        details.append(self.ui_label("admin") if record.get("is_admin") else self.ui_label("player"))
+        details.append(self.ui_label("banned") if record.get("is_banned") else self.ui_label("not_banned"))
+        details.append(self.ui_label("report_allowed") if record.get("can_report", True) else self.ui_label("report_revoked"))
+        tk.Label(frame, text=" | ".join(details), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+
+        menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        menu_card.pack(anchor="center")
+        self.menu_button(menu_card, self.ui_label("console_reset_password"), lambda u=self.console_selected_username: self.show_console_password_reset_menu(u)).pack(fill="x", pady=4)
+        self.menu_button(menu_card, self.ui_label("console_delete_user"), lambda u=self.console_selected_username: self.show_console_delete_user_menu(u)).pack(fill="x", pady=4)
+        if record.get("is_banned"):
+            self.menu_button(menu_card, self.ui_label("console_unban_user"), lambda u=self.console_selected_username: self.show_console_ban_action_menu(u, False)).pack(fill="x", pady=4)
+        else:
+            self.menu_button(menu_card, self.ui_label("console_ban_user"), lambda u=self.console_selected_username: self.show_console_ban_action_menu(u, True)).pack(fill="x", pady=4)
+        if record.get("is_admin"):
+            self.menu_button(menu_card, self.ui_label("console_remove_admin"), lambda u=self.console_selected_username: self.show_console_admin_action_menu(u, False)).pack(fill="x", pady=4)
+        else:
+            self.menu_button(menu_card, self.ui_label("console_make_admin"), lambda u=self.console_selected_username: self.show_console_admin_action_menu(u, True)).pack(fill="x", pady=4)
+        if record.get("can_report", True):
+            self.menu_button(menu_card, self.ui_label("console_revoke_report"), lambda u=self.console_selected_username: self.show_console_report_action_menu(u, False)).pack(fill="x", pady=4)
+        else:
+            self.menu_button(menu_card, self.ui_label("console_grant_report"), lambda u=self.console_selected_username: self.show_console_report_action_menu(u, True)).pack(fill="x", pady=4)
+
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_console_player_list, padx=12).pack(pady=(18, 0))
+
+    def show_console_password_reset_menu(self, username):
+        self.console_selected_username = username
+        self.current_screen_refresh = lambda u=username: self.show_console_password_reset_menu(u)
+        self.clear_view()
+        frame = self.create_scrollable_view()
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+        tk.Label(frame, text=self.ui_label("console_reset_password"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=username, font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+        self.console_new_password_var = tk.StringVar()
+        self.console_action_confirm_var = tk.BooleanVar(value=False)
+        tk.Label(card, text=self.ui_label("new_password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        password_entry = tk.Entry(card, textvariable=self.console_new_password_var, show="*", font=("Segoe UI", 12), width=28)
+        password_entry.pack(fill="x", pady=(4, 12))
+        tk.Checkbutton(card, text=self.ui_label("console_action_confirm"), variable=self.console_action_confirm_var, bg="#efe5d8", activebackground="#efe5d8", justify="left", wraplength=360).pack(anchor="w", pady=(0, 12))
+        password_entry.focus_set()
+        password_entry.bind("<Return>", lambda _event: self.submit_console_password_reset())
+        self.menu_button(card, self.ui_label("save_new_password"), self.submit_console_password_reset).pack(fill="x", pady=4)
+        tk.Button(frame, text=self.ui_label("back"), command=lambda u=username: self.show_console_account_details(u), padx=12).pack(pady=(18, 0))
+
+    def show_console_delete_user_menu(self, username):
+        self.console_selected_username = username
+        self.current_screen_refresh = lambda u=username: self.show_console_delete_user_menu(u)
+        self.clear_view()
+        frame = self.create_scrollable_view()
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+        tk.Label(frame, text=self.ui_label("console_delete_user"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=username, font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+        self.console_action_confirm_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(card, text=self.ui_label("console_delete_confirm"), variable=self.console_action_confirm_var, bg="#efe5d8", activebackground="#efe5d8", justify="left", wraplength=360).pack(anchor="w", pady=(0, 12))
+        self.menu_button(card, self.ui_label("delete_account"), self.submit_console_delete_user).pack(fill="x", pady=4)
+        tk.Button(frame, text=self.ui_label("back"), command=lambda u=username: self.show_console_account_details(u), padx=12).pack(pady=(18, 0))
+
+    def show_console_ban_action_menu(self, username, should_ban):
+        self.console_selected_username = username
+        self.current_screen_refresh = lambda u=username, b=should_ban: self.show_console_ban_action_menu(u, b)
+        self.clear_view()
+        frame = self.create_scrollable_view()
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+        title = self.ui_label("console_ban_user") if should_ban else self.ui_label("console_unban_user")
+        tk.Label(frame, text=title, font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=username, font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+        self.console_reason_var = tk.StringVar()
+        if should_ban:
+            tk.Label(card, text=self.ui_label("reason"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+            tk.Entry(card, textvariable=self.console_reason_var, font=("Segoe UI", 12), width=28).pack(fill="x", pady=(4, 12))
+        self.console_action_confirm_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(card, text=self.ui_label("console_action_confirm"), variable=self.console_action_confirm_var, bg="#efe5d8", activebackground="#efe5d8", justify="left", wraplength=360).pack(anchor="w", pady=(0, 12))
+        self.menu_button(card, title, self.submit_console_ban_user if should_ban else self.submit_console_unban_user).pack(fill="x", pady=4)
+        tk.Button(frame, text=self.ui_label("back"), command=lambda u=username: self.show_console_account_details(u), padx=12).pack(pady=(18, 0))
+
+    def show_console_admin_action_menu(self, username, make_admin):
+        self.console_selected_username = username
+        self.current_screen_refresh = lambda u=username, a=make_admin: self.show_console_admin_action_menu(u, a)
+        self.clear_view()
+        frame = self.create_scrollable_view()
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+        title = self.ui_label("console_make_admin") if make_admin else self.ui_label("console_remove_admin")
+        tk.Label(frame, text=title, font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=username, font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+        self.console_action_confirm_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(card, text=self.ui_label("console_action_confirm"), variable=self.console_action_confirm_var, bg="#efe5d8", activebackground="#efe5d8", justify="left", wraplength=360).pack(anchor="w", pady=(0, 12))
+        self.menu_button(card, title, self.submit_console_make_admin if make_admin else self.submit_console_remove_admin).pack(fill="x", pady=4)
+        tk.Button(frame, text=self.ui_label("back"), command=lambda u=username: self.show_console_account_details(u), padx=12).pack(pady=(18, 0))
+
+    def show_console_report_action_menu(self, username, can_report):
+        self.console_selected_username = username
+        self.current_screen_refresh = lambda u=username, c=can_report: self.show_console_report_action_menu(u, c)
+        self.clear_view()
+        frame = self.create_scrollable_view()
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+        title = self.ui_label("console_grant_report") if can_report else self.ui_label("console_revoke_report")
+        tk.Label(frame, text=title, font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=username, font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+        self.console_action_confirm_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(card, text=self.ui_label("console_action_confirm"), variable=self.console_action_confirm_var, bg="#efe5d8", activebackground="#efe5d8", justify="left", wraplength=360).pack(anchor="w", pady=(0, 12))
+        self.menu_button(card, title, self.submit_console_grant_report if can_report else self.submit_console_revoke_report).pack(fill="x", pady=4)
+        tk.Button(frame, text=self.ui_label("back"), command=lambda u=username: self.show_console_account_details(u), padx=12).pack(pady=(18, 0))
 
     def multiplayer_create_room(self):
         try:
@@ -3147,9 +3425,7 @@ class UnchessApp:
     def show_multiplayer_join_menu(self):
         self.current_screen_refresh = self.show_multiplayer_join_menu
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -3292,10 +3568,13 @@ class UnchessApp:
         )
 
     def submit_console_password_reset(self):
-        username = self.console_target_username_var.get().strip() if self.console_target_username_var is not None else ""
+        username = self.console_selected_username.strip()
         new_password = self.console_new_password_var.get() if self.console_new_password_var is not None else ""
         if not username or not new_password:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_username_password"))
+            return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
         if self.multiplayer_client is None:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
@@ -3303,14 +3582,15 @@ class UnchessApp:
         self.multiplayer_client.send({"type": "console_reset_password", "username": username, "new_password": new_password})
 
     def submit_console_delete_user(self):
-        username = self.console_target_username_var.get().strip() if self.console_target_username_var is not None else ""
+        username = self.console_selected_username.strip()
         if not username:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
             return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
+            return
         if self.multiplayer_client is None:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
-            return
-        if not messagebox.askyesno(self.ui_label("console_delete_user"), self.ui_label("console_delete_confirm")):
             return
         self.multiplayer_client.send({"type": "console_delete_user", "username": username})
 
@@ -3320,12 +3600,15 @@ class UnchessApp:
         self.multiplayer_client.send({"type": "console_snapshot"})
 
     def console_target_username(self):
-        return self.console_target_username_var.get().strip() if self.console_target_username_var is not None else ""
+        return self.console_selected_username.strip()
 
     def submit_console_ban_user(self):
         username = self.console_target_username()
         if not username:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
         reason = self.console_reason_var.get().strip() if self.console_reason_var is not None else ""
         self.multiplayer_client.send({"type": "console_set_ban", "username": username, "is_banned": True, "reason": reason})
@@ -3335,12 +3618,18 @@ class UnchessApp:
         if not username:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
             return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
+            return
         self.multiplayer_client.send({"type": "console_set_ban", "username": username, "is_banned": False, "reason": ""})
 
     def submit_console_make_admin(self):
         username = self.console_target_username()
         if not username:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
         self.multiplayer_client.send({"type": "console_set_admin", "username": username, "is_admin": True})
 
@@ -3349,31 +3638,46 @@ class UnchessApp:
         if not username:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
             return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
+            return
         self.multiplayer_client.send({"type": "console_set_admin", "username": username, "is_admin": False})
 
+    def submit_console_grant_report(self):
+        username = self.console_target_username()
+        if not username:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
+            return
+        self.multiplayer_client.send({"type": "console_set_report_permission", "username": username, "can_report": True})
+
+    def submit_console_revoke_report(self):
+        username = self.console_target_username()
+        if not username:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
+            return
+        self.multiplayer_client.send({"type": "console_set_report_permission", "username": username, "can_report": False})
+
     def render_console_snapshot(self, users):
-        if getattr(self, "console_snapshot_var", None) is None:
+        self.console_users_cache = [record for record in users if isinstance(record, dict)]
+        refresh_name = getattr(self.current_screen_refresh, "__name__", "") if callable(self.current_screen_refresh) else ""
+        if refresh_name == "show_console_player_list":
+            self.current_screen_refresh()
             return
-        if not users:
-            self.console_snapshot_var.set(self.ui_label("console_empty_snapshot"))
-            return
-        lines = []
-        for record in users:
-            flags = []
-            if record.get("is_admin"):
-                flags.append("admin")
-            if record.get("is_banned"):
-                flags.append(f"banned:{record.get('ban_reason') or '-'}")
-            suffix = f" [{' | '.join(flags)}]" if flags else ""
-            lines.append(f"- {record.get('username', '?')}{suffix}")
-        self.console_snapshot_var.set("\n".join(lines))
+        if callable(self.current_screen_refresh):
+            refresh_name = getattr(self.current_screen_refresh, "__name__", "")
+            if refresh_name == "<lambda>" and self.session_role == "console":
+                self.current_screen_refresh()
 
     def show_admin_rooms_menu(self, fetch=True):
         self.current_screen_refresh = lambda: self.show_admin_rooms_menu(fetch=False)
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -3458,9 +3762,7 @@ class UnchessApp:
         self.current_screen_refresh = lambda h=host, c=code: self.show_multiplayer_waiting_room(h, c)
         self.multiplayer_is_host = host
         self.clear_view()
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
-        frame.pack(fill="both", expand=True)
-        self.current_view = frame
+        frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
         top_bar.pack(fill="x")
@@ -3476,14 +3778,6 @@ class UnchessApp:
 
         self.multiplayer_host_controls = tk.Frame(frame, bg=BG_COLOR)
         self.multiplayer_host_controls.pack(anchor="center")
-        if host:
-            tk.Label(
-                self.multiplayer_host_controls,
-                text=f"{self.ui_label('host_auto_role')}: {self.role_policy_label(self.auto_role_policy)}",
-                font=("Segoe UI", 10),
-                bg=BG_COLOR,
-                fg="#6a6a6a",
-            ).pack()
 
         tk.Button(frame, text=self.ui_label("cancel"), command=self.cancel_multiplayer, padx=12).pack(pady=(18, 0))
 
@@ -3518,19 +3812,9 @@ class UnchessApp:
         ).pack(pady=(4, 10))
         row = tk.Frame(self.multiplayer_host_controls, bg=BG_COLOR)
         row.pack()
-        if self.auto_role_policy == "ask":
-            tk.Button(row, text=self.ui_label("white"), command=lambda: self.send_role_choice("white"), padx=12).pack(side="left", padx=4)
-            tk.Button(row, text=self.ui_label("black"), command=lambda: self.send_role_choice("black"), padx=12).pack(side="left", padx=4)
-            tk.Button(row, text=self.ui_label("random"), command=lambda: self.send_role_choice("random"), padx=12).pack(side="left", padx=4)
-        else:
-            tk.Label(
-                row,
-                text=f"{self.ui_label('role')}: {self.role_policy_label(self.auto_role_policy)}",
-                font=("Segoe UI", 10),
-                bg=BG_COLOR,
-                fg=TEXT_COLOR,
-            ).pack(side="left", padx=(0, 8))
-            tk.Button(row, text=self.ui_label("start"), command=lambda: self.send_role_choice(self.auto_role_policy), padx=12).pack(side="left", padx=4)
+        tk.Button(row, text=self.ui_label("white"), command=lambda: self.send_role_choice("white"), padx=12).pack(side="left", padx=4)
+        tk.Button(row, text=self.ui_label("black"), command=lambda: self.send_role_choice("black"), padx=12).pack(side="left", padx=4)
+        tk.Button(row, text=self.ui_label("random"), command=lambda: self.send_role_choice("random"), padx=12).pack(side="left", padx=4)
 
     def send_role_choice(self, choice):
         if self.multiplayer_client is not None:
@@ -3604,7 +3888,7 @@ class UnchessApp:
             }
         )
 
-    def start_multiplayer_game(self, player_color, room_code, move_limit):
+    def start_multiplayer_game(self, player_color, room_code, move_limit, initial_state=None):
         self.start_game(
             {
                 "mode": "multiplayer",
@@ -3614,6 +3898,7 @@ class UnchessApp:
                 "network_client": self.multiplayer_client,
                 "room_code": room_code,
                 "move_limit": move_limit,
+                "initial_state": initial_state,
             }
         )
 
@@ -3773,6 +4058,8 @@ class UnchessApp:
         if event_type == "console_action_success":
             if self.console_new_password_var is not None:
                 self.console_new_password_var.set("")
+            self.request_console_snapshot()
+            self.show_console_player_list()
             messagebox.showinfo(self.ui_label("console_title"), event.get("message", self.ui_label("console_action_done")))
             return
         if event_type == "console_snapshot":
@@ -3847,7 +4134,12 @@ class UnchessApp:
                 assignment = room["role_assignment"]
                 # If we created the room, we are the host. Otherwise we are the guest.
                 player_color = assignment["host"] if self.multiplayer_is_host else assignment["guest"]
-                self.start_multiplayer_game(player_color, room["room_code"], room.get("move_limit", self.default_move_limit))
+                self.start_multiplayer_game(
+                    player_color,
+                    room["room_code"],
+                    room.get("move_limit", self.default_move_limit),
+                    initial_state=event.get("game_state"),
+                )
             return
         if event_type == "player_left":
             room = event["room"]
@@ -4608,8 +4900,8 @@ class UnchessApp:
                 "logged_in": "Bejelentkezve",
                 "console_title": "Console",
                 "console_role": "console",
-                "console_placeholder_text": "Ez a console session kulon szerveroldali muveletekhez lesz fenntartva. A spectate es a meccsfigyeles nem ide tartozik.",
-                "console_tools_soon": "A console eszkozok ide kerulnek",
+                "console_placeholder_text": "Ez a console session csak szerveroldali fiok- es moderacios muveletekre valo. A meccsfigyeles nem ide tartozik.",
+                "console_tools_soon": "Valassz egy kulon nezetet a lenti muveletekhez.",
                 "new_password": "Uj jelszo",
                 "console_reset_password": "Jelszo reset",
                 "console_delete_user": "Fiok torlese",
@@ -4622,6 +4914,18 @@ class UnchessApp:
                 "console_remove_admin": "Admin jog elvetele",
                 "console_refresh": "Frissites",
                 "console_empty_snapshot": "Nincs megjelenitheto fiok.",
+                "player_list": "Player lista",
+                "console_players_subtitle": "Valassz ki egy fiokot a listabol. Az adminok vannak elol, utana mindenki ASCII sorrendben.",
+                "search": "Kereses",
+                "console_action_confirm": "Biztos vagyok benne, hogy ezt a muveletet akarom vegrehajtani.",
+                "console_action_confirm_required": "Jelold be a megerosito negyzetet.",
+                "admin": "Admin",
+                "banned": "Tiltva",
+                "not_banned": "Nincs tiltva",
+                "report_allowed": "Report jog: van",
+                "report_revoked": "Report jog: elveve",
+                "console_grant_report": "Report jog megadasa",
+                "console_revoke_report": "Report jog elvetele",
                 "console_profile_hint": "Ez egy operátori session. Itt szerveroldali account- és moderációs műveletek vannak, nem meccsfigyelés.",
                 "guest_profile_hint": "Vendég módban játszol. A pontok és statok csak bejelentkezett fiókhoz menthetők.",
                 "create_room": "Új játék létrehozása",
@@ -4752,8 +5056,8 @@ class UnchessApp:
                 "logged_in": "Logged in",
                 "console_title": "Console",
                 "console_role": "console",
-                "console_placeholder_text": "This console session is reserved for server-side account and moderation operations. Match spectating does not belong here.",
-                "console_tools_soon": "Console tools will appear here",
+                "console_placeholder_text": "This console session is only for server-side account and moderation work. Match supervision does not belong here.",
+                "console_tools_soon": "Choose a dedicated workflow below.",
                 "new_password": "New password",
                 "console_reset_password": "Reset password",
                 "console_delete_user": "Delete account",
@@ -4766,6 +5070,18 @@ class UnchessApp:
                 "console_remove_admin": "Remove admin",
                 "console_refresh": "Refresh",
                 "console_empty_snapshot": "There are no accounts to display.",
+                "player_list": "Player list",
+                "console_players_subtitle": "Pick an account from the list. Admins are shown first, then everyone else in ASCII order.",
+                "search": "Search",
+                "console_action_confirm": "I am sure I want to perform this action.",
+                "console_action_confirm_required": "Tick the confirmation checkbox first.",
+                "admin": "Admin",
+                "banned": "Banned",
+                "not_banned": "Not banned",
+                "report_allowed": "Report permission: granted",
+                "report_revoked": "Report permission: revoked",
+                "console_grant_report": "Grant report permission",
+                "console_revoke_report": "Revoke report permission",
                 "console_profile_hint": "This is an operator session for server-side account and moderation actions, not for match supervision.",
                 "guest_profile_hint": "You are playing as a guest. Points and long-term stats are only saved for signed-in accounts.",
                 "create_room": "Create new game",
