@@ -1240,7 +1240,7 @@ class UnchessGame:
         self.back_button.pack(side="right")
 
         if self.mode_config["mode"] in {"multiplayer", "spectator"}:
-            if self.app.is_admin:
+            if self.app.is_admin and self.mode_config["mode"] == "spectator":
                 self.ban_button = tk.Button(
                     header,
                     text=self.app.ui_label("ban"),
@@ -1257,14 +1257,17 @@ class UnchessGame:
                     command=self.toggle_spectate_target,
                     padx=12,
                 )
-            else:
+            elif not self.app.is_admin:
                 self.report_button = tk.Button(
                     header,
                     text=self.app.ui_label("report"),
                     command=self.report_opponent,
                     padx=12,
                 )
-            self.report_button.pack(side="right", padx=(0, 8))
+            else:
+                self.report_button = None
+            if self.report_button is not None:
+                self.report_button.pack(side="right", padx=(0, 8))
         else:
             self.ban_button = None
             self.report_button = None
@@ -1281,9 +1284,19 @@ class UnchessGame:
             self.pause_button = None
 
         board_area = tk.Frame(self.container, bg=BG_COLOR)
-        board_area.pack(fill="both", expand=True)
+        board_area.pack(fill="both", expand=True, pady=(12, 12))
         board_area.grid_rowconfigure(0, weight=1)
-        board_area.grid_columnconfigure(0, weight=1)
+        board_column = 0
+        if self.mode_config["mode"] == "multiplayer" and self.app.is_admin:
+            admin_panel = tk.Frame(board_area, width=180, bg="#efe5d8", padx=14, pady=16)
+            admin_panel.grid(row=0, column=0, sticky="ns", padx=(0, 12))
+            admin_panel.grid_propagate(False)
+            tk.Label(admin_panel, text=self.app.ui_label("admin_ingame_tools"), font=("Segoe UI", 12, "bold"), bg="#efe5d8", fg=TEXT_COLOR, justify="left").pack(anchor="w", pady=(0, 10))
+            tk.Label(admin_panel, text=self.app.ui_label("admin_ingame_tools_subtitle"), font=("Segoe UI", 10), bg="#efe5d8", fg="#5a5a5a", wraplength=150, justify="left").pack(anchor="w", pady=(0, 12))
+            tk.Button(admin_panel, text=self.app.ui_label("console_revoke_report"), command=self.revoke_opponent_report_permission, padx=10, pady=8, wraplength=140, justify="center").pack(fill="x", pady=(0, 8))
+            tk.Button(admin_panel, text=self.app.ui_label("ban"), command=self.ban_opponent, padx=10, pady=8, wraplength=140, justify="center").pack(fill="x")
+            board_column = 1
+        board_area.grid_columnconfigure(board_column, weight=1)
 
         self.canvas = tk.Canvas(
             board_area,
@@ -1292,12 +1305,12 @@ class UnchessGame:
             bg=BG_COLOR,
             highlightthickness=0,
         )
-        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.canvas.grid(row=0, column=board_column, sticky="nsew")
         self.canvas.bind("<Button-1>", self.on_mouse_click)
         self.canvas.bind("<Configure>", self.on_canvas_resize)
 
         sidebar = tk.Frame(board_area, width=SIDEBAR_WIDTH, bg=BG_COLOR, padx=18, pady=20)
-        sidebar.grid(row=0, column=1, sticky="ns")
+        sidebar.grid(row=0, column=board_column + 1, sticky="ns")
         sidebar.grid_propagate(False)
 
         self.sidebar_title_label = tk.Label(
@@ -1762,6 +1775,13 @@ class UnchessGame:
         if not messagebox.askyesno(self.app.ui_label("ban"), self.app.ui_label("confirm_ban")):
             return
         self.network_client.send({"type": "ban_player"})
+
+    def revoke_opponent_report_permission(self):
+        if self.mode_config["mode"] != "multiplayer" or self.network_client is None or not self.app.is_admin:
+            return
+        if not messagebox.askyesno(self.app.ui_label("console_revoke_report"), self.app.ui_label("confirm_revoke_opponent_report")):
+            return
+        self.network_client.send({"type": "admin_revoke_opponent_report"})
 
     def ban_spectated_target(self):
         if self.mode_config["mode"] != "spectator" or self.network_client is None or not self.app.is_admin:
@@ -3823,43 +3843,6 @@ class UnchessApp:
             return
         self.multiplayer_client.send({"type": "admin_spectate_room", "room_code": room_code})
 
-    def report_opponent(self):
-        if self.mode_config["mode"] != "multiplayer" or self.network_client is None:
-            return
-        if not messagebox.askyesno(self.ui_label("report"), self.ui_label("confirm_report")):
-            return
-        self.network_client.send({"type": "report_player"})
-
-    def ban_opponent(self):
-        if self.mode_config["mode"] != "multiplayer" or self.network_client is None or not self.app.is_admin:
-            return
-        if not messagebox.askyesno(self.ui_label("ban"), self.ui_label("confirm_ban")):
-            return
-        self.network_client.send({"type": "ban_player"})
-
-    def ban_spectated_target(self):
-        if self.mode_config["mode"] != "spectator" or self.network_client is None or not self.app.is_admin:
-            return
-        target_slot = self.mode_config.get("ban_target_slot")
-        if target_slot not in {"host", "guest"}:
-            return
-        if not messagebox.askyesno(self.ui_label("ban"), self.ui_label("confirm_ban")):
-            return
-        self.network_client.send(
-            {
-                "type": "admin_ban_room_player",
-                "room_code": self.mode_config.get("room_code", ""),
-                "target_slot": target_slot,
-            }
-        )
-
-    def toggle_spectate_target(self):
-        if self.mode_config["mode"] != "spectator":
-            return
-        current = self.mode_config.get("ban_target_slot", "host")
-        self.mode_config["ban_target_slot"] = "guest" if current == "host" else "host"
-        self.update_sidebar()
-
     def show_multiplayer_waiting_room(self, host, code="......"):
         self.current_screen_refresh = lambda h=host, c=code: self.show_multiplayer_waiting_room(h, c)
         self.multiplayer_is_host = host
@@ -4162,6 +4145,9 @@ class UnchessApp:
             return
         if event_type == "ban_success":
             messagebox.showinfo("Multiplayer", f"Játékos tiltva: {event.get('banned_username', 'ismeretlen')}")
+            return
+        if event_type == "admin_action_success":
+            messagebox.showinfo(self.ui_label("multiplayer"), event.get("message", self.ui_label("admin_action_done")))
             return
         if event_type == "console_action_success":
             if self.console_new_password_var is not None:
@@ -5045,8 +5031,12 @@ class UnchessApp:
                 "admin": "Admin",
                 "banned": "Tiltva",
                 "not_banned": "Nincs tiltva",
+                "admin_action_done": "Admin muvelet vegrehajtva.",
+                "admin_ingame_tools": "Admin eszkozok",
+                "admin_ingame_tools_subtitle": "In-match admin muveletek az aktualis ellenfeledhez.",
                 "report_allowed": "Report jog: van",
                 "report_revoked": "Report jog: elveve",
+                "confirm_revoke_opponent_report": "Biztosan el akarod venni az ellenfeled report jogat?",
                 "console_grant_report": "Report jog megadasa",
                 "console_revoke_report": "Report jog elvetele",
                 "console_profile_hint": "Ez egy operátori session. Itt szerveroldali account- és moderációs műveletek vannak, nem meccsfigyelés.",
@@ -5205,8 +5195,12 @@ class UnchessApp:
                 "admin": "Admin",
                 "banned": "Banned",
                 "not_banned": "Not banned",
+                "admin_action_done": "Admin action completed.",
+                "admin_ingame_tools": "Admin tools",
+                "admin_ingame_tools_subtitle": "In-match admin actions for your current opponent.",
                 "report_allowed": "Report permission: granted",
                 "report_revoked": "Report permission: revoked",
+                "confirm_revoke_opponent_report": "Are you sure you want to revoke your opponent's report permission?",
                 "console_grant_report": "Grant report permission",
                 "console_revoke_report": "Revoke report permission",
                 "console_profile_hint": "This is an operator session for server-side account and moderation actions, not for match supervision.",
