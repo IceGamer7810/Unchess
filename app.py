@@ -3970,7 +3970,11 @@ class UnchessApp:
             self.close_multiplayer_client()
             return
         if event_type == "error":
-            messagebox.showerror("Multiplayer", event.get("message", "Szerverhiba"))
+            raw_message = event.get("message", "Server error")
+            if raw_message == "You have already reported your opponent once in this match.":
+                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("report_already_used_this_match"))
+            else:
+                messagebox.showerror(self.ui_label("multiplayer"), raw_message)
             if self.pending_multiplayer_action and self.pending_multiplayer_action["kind"] == "join":
                 self.show_multiplayer_join_menu()
             elif self.pending_multiplayer_action and self.pending_multiplayer_action["kind"] == "create":
@@ -4953,6 +4957,7 @@ class UnchessApp:
                 "no_stored_login": "Nincs mentett belépés.",
                 "no_active_server_connection": "Nincs aktív kapcsolat a szerverhez.",
                 "confirm_report": "Biztosan reportolni szeretnéd az ellenfelet?",
+                "report_already_used_this_match": "Ebben a meccsben már egyszer reportoltad az ellenfeledet.",
                 "confirm_ban": "Biztosan tiltani szeretnéd az ellenfelet?",
                 "match_options_subtitle": "Állítsd be a parti lépéslimitjét.",
                 "player": "Játékos",
@@ -5109,6 +5114,7 @@ class UnchessApp:
                 "no_stored_login": "No stored login found.",
                 "no_active_server_connection": "There is no active server connection.",
                 "confirm_report": "Are you sure you want to report your opponent?",
+                "report_already_used_this_match": "You have already reported your opponent once in this match.",
                 "confirm_ban": "Are you sure you want to ban your opponent?",
                 "match_options_subtitle": "Set the match move limit.",
                 "player": "Player",
