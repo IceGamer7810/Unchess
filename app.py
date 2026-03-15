@@ -3499,6 +3499,8 @@ class UnchessApp:
         tk.Button(frame, text=self.ui_label("back"), command=lambda u=username: self.show_console_account_details(u), padx=12).pack(pady=(18, 0))
 
     def multiplayer_create_room(self):
+        if self.pending_multiplayer_action and self.pending_multiplayer_action.get("kind") == "create":
+            return
         try:
             self.ensure_multiplayer_connection()
             self.pending_multiplayer_action = {"kind": "create"}
@@ -3535,13 +3537,14 @@ class UnchessApp:
         entry = tk.Entry(frame, textvariable=self.multiplayer_join_code_var, font=("Consolas", 20), justify="center", width=10)
         entry.pack(pady=(0, 18))
         entry.focus_set()
-        entry.bind("<Return>", lambda _event: self.multiplayer_join_room())
         self.set_global_return_action(self.multiplayer_join_room)
 
         self.menu_button(frame, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
         tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(pady=(18, 0))
 
     def multiplayer_join_room(self):
+        if self.pending_multiplayer_action and self.pending_multiplayer_action.get("kind") == "join":
+            return
         code = (self.multiplayer_join_code_var.get() if self.multiplayer_join_code_var is not None else "").strip().upper()
         if not code:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_room_code_error"))
@@ -4072,6 +4075,8 @@ class UnchessApp:
             raw_message = event.get("message", "Server error")
             if raw_message == "You have already reported your opponent once in this match.":
                 messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("report_already_used_this_match"))
+            elif raw_message == "You are already assigned to a room.":
+                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("already_assigned_to_room"))
             else:
                 messagebox.showerror(self.ui_label("multiplayer"), raw_message)
             if self.pending_multiplayer_action and self.pending_multiplayer_action["kind"] == "join":
@@ -5072,6 +5077,7 @@ class UnchessApp:
                 "no_active_server_connection": "Nincs aktív kapcsolat a szerverhez.",
                 "confirm_report": "Biztosan reportolni szeretnéd az ellenfelet?",
                 "report_already_used_this_match": "Ebben a meccsben már egyszer reportoltad az ellenfeledet.",
+                "already_assigned_to_room": "Már hozzá vagy rendelve egy szobához.",
                 "confirm_ban": "Biztosan tiltani szeretnéd az ellenfelet?",
                 "match_options_subtitle": "Állítsd be a parti lépéslimitjét.",
                 "player": "Játékos",
@@ -5231,6 +5237,7 @@ class UnchessApp:
                 "no_active_server_connection": "There is no active server connection.",
                 "confirm_report": "Are you sure you want to report your opponent?",
                 "report_already_used_this_match": "You have already reported your opponent once in this match.",
+                "already_assigned_to_room": "You are already assigned to a room.",
                 "confirm_ban": "Are you sure you want to ban your opponent?",
                 "match_options_subtitle": "Set the match move limit.",
                 "player": "Player",
