@@ -8,7 +8,6 @@ import math
 import os
 from pathlib import Path
 import random
-import re
 import socket
 import threading
 import queue
@@ -24,10 +23,8 @@ WINDOW_WIDTH = BOARD_PIXELS + SIDEBAR_WIDTH
 WINDOW_HEIGHT = BOARD_PIXELS + 70
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 7777
-SETTINGS_PATH = Path("settings.toml")
-LEGACY_SETTINGS_PATH = Path(".settings.toml")
-
-USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+BASE_DIR = Path(__file__).resolve().parent
+SETTINGS_PATH = BASE_DIR / "settings.toml"
 
 LIGHT_SQUARE = "#f0d9b5"
 DARK_SQUARE = "#b58863"
@@ -102,11 +99,33 @@ def detect_default_language():
     return "hu" if system_locale.startswith("hu") else "en"
 
 
-def username_is_ascii_safe(username):
-    return USERNAME_RE.fullmatch((username or "").strip()) is not None
+def blank_stat_bucket():
+    return {"wins": 0, "losses": 0, "draws": 0, "points": 0}
+
+
+def default_profile_stats():
+    return {"multiplayer": blank_stat_bucket(), "bot": blank_stat_bucket()}
+
+
+def normalize_profile_stats(stats):
+    normalized = default_profile_stats()
+    if not isinstance(stats, dict):
+        return normalized
+    for bucket in ("multiplayer", "bot"):
+        raw_bucket = stats.get(bucket, {})
+        if not isinstance(raw_bucket, dict):
+            continue
+        for key in ("wins", "losses", "draws", "points"):
+            try:
+                normalized[bucket][key] = int(raw_bucket.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                normalized[bucket][key] = 0
+    return normalized
 
 
 def write_client_settings(settings):
+    multiplayer_stats = normalize_profile_stats(settings["profile_stats"])["multiplayer"]
+    bot_stats = normalize_profile_stats(settings["profile_stats"])["bot"]
     content = (
         "[client]\n"
         f'server_host = "{settings["server_host"]}"\n'
@@ -114,13 +133,24 @@ def write_client_settings(settings):
         "[auth]\n"
         f'user_name = "{settings["user_name"]}"\n'
         f'session_role = "{settings["session_role"]}"\n'
-        f'remember_token = "{settings["remember_token"]}"\n\n'
+        f'remember_token = "{settings["remember_token"]}"\n'
+        f"suppress_auth_prompt = {'true' if settings['suppress_auth_prompt'] else 'false'}\n\n"
         "[gameplay]\n"
         f'auto_role_policy = "{settings["auto_role_policy"]}"\n'
         f'bot_tempo = "{settings["bot_tempo"]}"\n'
         f"move_limit = {int(settings['move_limit'])}\n\n"
         "[ui]\n"
-        f'language = "{settings["language"]}"\n'
+        f'language = "{settings["language"]}"\n\n'
+        "[stats.multiplayer]\n"
+        f"wins = {multiplayer_stats['wins']}\n"
+        f"losses = {multiplayer_stats['losses']}\n"
+        f"draws = {multiplayer_stats['draws']}\n"
+        f"points = {multiplayer_stats['points']}\n\n"
+        "[stats.bot]\n"
+        f"wins = {bot_stats['wins']}\n"
+        f"losses = {bot_stats['losses']}\n"
+        f"draws = {bot_stats['draws']}\n"
+        f"points = {bot_stats['points']}\n"
     )
     SETTINGS_PATH.write_text(content, encoding="utf-8")
 
@@ -132,13 +162,13 @@ def load_client_settings():
         "user_name": "",
         "session_role": "",
         "remember_token": "",
+        "suppress_auth_prompt": False,
         "auto_role_policy": "ask",
         "bot_tempo": "normal",
         "move_limit": -1,
         "language": detect_default_language(),
+        "profile_stats": default_profile_stats(),
     }
-    if not SETTINGS_PATH.exists() and LEGACY_SETTINGS_PATH.exists():
-        SETTINGS_PATH.write_text(LEGACY_SETTINGS_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     if not SETTINGS_PATH.exists():
         write_client_settings(defaults)
         return defaults.copy()
@@ -162,6 +192,7 @@ def load_client_settings():
     settings["user_name"] = str(auth.get("user_name", defaults["user_name"]))
     settings["session_role"] = str(auth.get("session_role", defaults["session_role"])).lower()
     settings["remember_token"] = str(auth.get("remember_token", defaults["remember_token"]))
+    settings["suppress_auth_prompt"] = bool(auth.get("suppress_auth_prompt", defaults["suppress_auth_prompt"]))
     if settings["session_role"] not in {"", "player", "admin", "console"}:
         settings["session_role"] = ""
     settings["auto_role_policy"] = str(gameplay.get("auto_role_policy", defaults["auto_role_policy"]))
@@ -173,6 +204,7 @@ def load_client_settings():
     settings["language"] = str(ui.get("language", defaults["language"])).lower()
     if settings["language"] not in {"hu", "en"}:
         settings["language"] = defaults["language"]
+    settings["profile_stats"] = normalize_profile_stats(data.get("stats", defaults["profile_stats"]))
     write_client_settings(settings)
     return settings
 
@@ -1138,6 +1170,7 @@ class UnchessGame:
         self.state_history = [self.repetition_key(self.board, self.side_to_move)]
         self.last_executed_move = None
         self.move_history = []
+        self.match_started_at = time.time()
         self.check_path = set()
         self.checker_positions = set()
         self.check_king = None
@@ -1198,7 +1231,7 @@ class UnchessGame:
         self.back_button = tk.Button(
             header,
             text=self.app.ui_label("back_to_menu"),
-            command=self.app.show_main_menu,
+            command=self.app.return_to_main_menu,
             padx=12,
         )
         self.back_button.pack(side="right")
@@ -2285,6 +2318,7 @@ class UnchessGame:
         self.game_over = True
         self.status_var.set(message)
         self.draw()
+        self.app.report_finished_local_match(self)
         messagebox.showinfo("Játék vége", message)
 
 
@@ -2306,7 +2340,10 @@ class UnchessApp:
         self.user_name = settings["user_name"]
         self.session_role = settings["session_role"]
         self.remember_token = settings["remember_token"]
+        self.suppress_auth_prompt = settings["suppress_auth_prompt"]
+        self.profile_stats = normalize_profile_stats(settings["profile_stats"])
         self.is_admin = self.session_role == "admin"
+        self.session_confirmed = False
         self.language = settings["language"]
         self.auto_role_policy = settings["auto_role_policy"]
         self.bot_tempo = settings["bot_tempo"]
@@ -2349,8 +2386,26 @@ class UnchessApp:
         self.settings_move_limit_var = None
         self.settings_host_var = None
         self.settings_port_var = None
+        self.profile_button = None
+        self.profile_panel = None
+        self.profile_anchor_widget = None
+        self.auth_target_screen = "main"
+        self.account_prompt_remind_var = None
+        self.account_prompt_username_var = None
+        self.account_prompt_password_var = None
+        self.profile_delete_back = None
         self.current_screen_refresh = None
         self.root.after(120, self.poll_network_events)
+        self.bootstrap_app()
+
+    def bootstrap_app(self):
+        if self.user_name and self.remember_token:
+            self.show_main_menu()
+            self.root.after(0, self.restore_saved_login)
+            return
+        if not self.user_name and not self.remember_token and not self.suppress_auth_prompt:
+            self.show_startup_account_prompt()
+            return
         self.show_main_menu()
 
     def on_app_close(self):
@@ -2358,10 +2413,15 @@ class UnchessApp:
         self.root.destroy()
 
     def clear_view(self):
-        self.close_settings_panel()
+        self.close_profile_panel(redraw_icon=False)
+        self.close_settings_panel(redraw_icon=False)
         if self.current_view is not None:
             self.current_view.destroy()
             self.current_view = None
+        self.profile_button = None
+        self.profile_anchor_widget = None
+        self.settings_button = None
+        self.settings_anchor_widget = None
 
     def refresh_current_view_language(self):
         if isinstance(self.current_view, UnchessGame):
@@ -2376,6 +2436,7 @@ class UnchessApp:
             self.multiplayer_client.close()
             self.multiplayer_client = None
         self.multiplayer_room = None
+        self.session_confirmed = False
         self.admin_rooms_cache = []
         self.multiplayer_is_host = False
         self.multiplayer_status_var = None
@@ -2384,6 +2445,36 @@ class UnchessApp:
         self.multiplayer_host_controls = None
         self.multiplayer_move_limit_var = None
         self.pending_multiplayer_action = None
+        self.ignore_next_disconnect = False
+
+    def reset_account_state(self):
+        self.user_name = ""
+        self.session_role = ""
+        self.is_admin = False
+        self.remember_token = ""
+        self.session_confirmed = False
+        self.profile_stats = default_profile_stats()
+        self.save_settings()
+
+    def has_confirmed_account(self):
+        return bool(self.session_confirmed and self.user_name and self.session_role in {"player", "admin", "console"})
+
+    def update_profile_snapshot(self, profile):
+        if not isinstance(profile, dict):
+            return
+        self.profile_stats = normalize_profile_stats(profile.get("stats"))
+        if profile.get("username"):
+            self.user_name = str(profile.get("username"))
+        if profile.get("role") in {"player", "admin", "console"}:
+            self.session_role = str(profile.get("role"))
+            self.is_admin = self.session_role == "admin"
+        self.save_settings()
+
+    def after_successful_auth(self):
+        if self.auth_target_screen == "multiplayer":
+            self.show_post_login_multiplayer_view()
+        else:
+            self.show_main_menu()
 
     def ensure_multiplayer_connection(self):
         if self.multiplayer_client is not None and self.multiplayer_client.connected:
@@ -2394,8 +2485,12 @@ class UnchessApp:
         self.multiplayer_client = client
 
     def show_multiplayer_entry(self):
-        if self.user_name:
+        self.auth_target_screen = "multiplayer"
+        if self.has_confirmed_account():
             self.show_post_login_multiplayer_view()
+        elif self.remember_token:
+            self.show_multiplayer_auth_menu()
+            self.root.after(0, self.restore_saved_login)
         else:
             self.show_multiplayer_auth_menu()
 
@@ -2413,7 +2508,6 @@ class UnchessApp:
 
     def show_main_menu(self):
         self.current_screen_refresh = self.show_main_menu
-        self.close_multiplayer_client()
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
         frame.pack(fill="both", expand=True)
@@ -2454,6 +2548,147 @@ class UnchessApp:
             bg=BG_COLOR,
             fg="#6a6a6a",
         ).pack(anchor="center", pady=(20, 0))
+
+    def show_startup_account_prompt(self):
+        self.auth_target_screen = "main"
+        self.current_screen_refresh = self.show_startup_account_prompt
+        self.clear_view()
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
+        frame.pack(fill="both", expand=True)
+        self.current_view = frame
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        tk.Label(
+            frame,
+            text=self.ui_label("account_prompt_title"),
+            font=("Segoe UI", 28, "bold"),
+            bg=BG_COLOR,
+            fg=TEXT_COLOR,
+        ).pack(anchor="center", pady=(14, 8))
+        tk.Label(
+            frame,
+            text=self.ui_label("account_prompt_subtitle"),
+            font=("Segoe UI", 11),
+            bg=BG_COLOR,
+            fg="#5a5a5a",
+            wraplength=620,
+            justify="center",
+        ).pack(anchor="center", pady=(0, 20))
+
+        card = tk.Frame(frame, bg="#efe5d8", padx=24, pady=24)
+        card.pack(anchor="center")
+        self.account_prompt_remind_var = tk.BooleanVar(value=False)
+
+        self.menu_button(card, self.ui_label("login"), lambda: self.show_startup_auth_menu("login")).pack(fill="x")
+        tk.Button(
+            card,
+            text=self.ui_label("switch_to_register"),
+            command=lambda: self.show_startup_auth_menu("register"),
+            font=("Segoe UI", 10, "bold"),
+            bg="#efe5d8",
+            fg="#5b3b26",
+            relief="flat",
+            cursor="hand2",
+            anchor="center",
+            justify="center",
+            wraplength=340,
+        ).pack(anchor="center", pady=(10, 2))
+
+        guest_button = tk.Button(
+            card,
+            text=self.ui_label("continue_as_guest"),
+            command=self.continue_as_guest,
+            font=("Segoe UI", 10),
+            bg="#efe5d8",
+            fg="#6a5240",
+            relief="flat",
+            cursor="hand2",
+            padx=6,
+            pady=4,
+        )
+        guest_button.pack(anchor="center", pady=(12, 6))
+        tk.Checkbutton(
+            card,
+            text=self.ui_label("dont_remind_again"),
+            variable=self.account_prompt_remind_var,
+            bg="#efe5d8",
+            fg="#6a5240",
+            activebackground="#efe5d8",
+            selectcolor="#efe5d8",
+        ).pack(anchor="center")
+
+    def show_startup_auth_menu(self, mode):
+        self.auth_target_screen = "main"
+        self.current_screen_refresh = lambda m=mode: self.show_startup_auth_menu(m)
+        self.clear_view()
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
+        frame.pack(fill="both", expand=True)
+        self.current_view = frame
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        title_key = "login" if mode == "login" else "register"
+        tk.Label(frame, text=self.ui_label(title_key), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(
+            frame,
+            text=self.ui_label("account_auth_subtitle"),
+            font=("Segoe UI", 11),
+            bg=BG_COLOR,
+            fg="#5a5a5a",
+            wraplength=620,
+            justify="center",
+        ).pack(anchor="center", pady=(0, 18))
+
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+
+        self.account_prompt_username_var = tk.StringVar(value=self.user_name)
+        self.account_prompt_password_var = tk.StringVar()
+        self.auth_username_var = self.account_prompt_username_var
+        self.auth_password_var = self.account_prompt_password_var
+        self.auth_remember_var = tk.BooleanVar(value=True if mode == "login" else False)
+
+        tk.Label(card, text=self.ui_label("username"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Entry(card, textvariable=self.auth_username_var, font=("Segoe UI", 12), width=28).pack(fill="x", pady=(4, 12))
+        tk.Label(card, text=self.ui_label("password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        tk.Entry(card, textvariable=self.auth_password_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 10))
+        if mode == "login":
+            tk.Checkbutton(card, text=self.ui_label("remember_me"), variable=self.auth_remember_var, bg="#efe5d8", activebackground="#efe5d8").pack(anchor="w", pady=(0, 12))
+            self.menu_button(card, self.ui_label("login"), self.submit_login).pack(fill="x", pady=4)
+            tk.Button(
+                card,
+                text=self.ui_label("switch_to_register"),
+                command=lambda: self.show_startup_auth_menu("register"),
+                font=("Segoe UI", 10, "bold"),
+                bg="#efe5d8",
+                fg="#5b3b26",
+                relief="flat",
+                cursor="hand2",
+                anchor="center",
+                justify="center",
+                wraplength=340,
+            ).pack(anchor="center", pady=(10, 0))
+        else:
+            self.menu_button(card, self.ui_label("register"), self.submit_register).pack(fill="x", pady=4)
+            tk.Button(
+                card,
+                text=self.ui_label("switch_to_login"),
+                command=lambda: self.show_startup_auth_menu("login"),
+                font=("Segoe UI", 10, "bold"),
+                bg="#efe5d8",
+                fg="#5b3b26",
+                relief="flat",
+                cursor="hand2",
+                anchor="center",
+                justify="center",
+                wraplength=340,
+            ).pack(anchor="center", pady=(10, 0))
+        tk.Button(frame, text=self.ui_label("back"), command=self.show_startup_account_prompt, padx=12).pack(pady=(18, 0))
 
     def show_bot_menu(self):
         self.current_screen_refresh = self.show_bot_menu
@@ -2684,8 +2919,9 @@ class UnchessApp:
 
         tk.Button(frame, text=self.ui_label("back"), command=self.show_bot_menu, padx=12).pack(pady=(18, 0))
 
-    def show_multiplayer_auth_menu(self):
-        self.current_screen_refresh = self.show_multiplayer_auth_menu
+    def show_multiplayer_auth_menu(self, mode="login"):
+        self.auth_target_screen = "multiplayer"
+        self.current_screen_refresh = lambda m=mode: self.show_multiplayer_auth_menu(m)
         self.clear_view()
         frame = tk.Frame(self.root, bg=BG_COLOR, padx=40, pady=36)
         frame.pack(fill="both", expand=True)
@@ -2695,7 +2931,8 @@ class UnchessApp:
         top_bar.pack(fill="x")
         self.mount_settings_button(top_bar)
 
-        tk.Label(frame, text=self.ui_label("multiplayer_login"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        title_key = "login" if mode == "login" else "register"
+        tk.Label(frame, text=self.ui_label(title_key), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
         tk.Label(frame, text=f"{self.ui_label('server')}: {self.server_host}:{self.server_port}", font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
 
         card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
@@ -2703,21 +2940,51 @@ class UnchessApp:
 
         self.auth_username_var = tk.StringVar(value=self.user_name)
         self.auth_password_var = tk.StringVar()
-        self.auth_remember_var = tk.BooleanVar(value=bool(self.remember_token))
+        self.auth_remember_var = tk.BooleanVar(value=bool(self.remember_token) if mode == "login" else False)
 
         tk.Label(card, text=self.ui_label("username"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         tk.Entry(card, textvariable=self.auth_username_var, font=("Segoe UI", 12), width=28).pack(fill="x", pady=(4, 12))
         tk.Label(card, text=self.ui_label("password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         tk.Entry(card, textvariable=self.auth_password_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 10))
-        tk.Checkbutton(card, text=self.ui_label("remember_me"), variable=self.auth_remember_var, bg="#efe5d8", activebackground="#efe5d8").pack(anchor="w", pady=(0, 12))
-
-        row = tk.Frame(card, bg="#efe5d8")
-        row.pack(fill="x")
-        self.menu_button(row, self.ui_label("login"), self.submit_login).pack(fill="x", pady=4)
-        self.menu_button(row, self.ui_label("register"), self.submit_register).pack(fill="x", pady=4)
-        if self.remember_token:
-            self.menu_button(row, self.ui_label("stored_login"), self.restore_saved_login).pack(fill="x", pady=4)
+        if mode == "login":
+            tk.Checkbutton(card, text=self.ui_label("remember_me"), variable=self.auth_remember_var, bg="#efe5d8", activebackground="#efe5d8").pack(anchor="w", pady=(0, 12))
+            self.menu_button(card, self.ui_label("login"), self.submit_login).pack(fill="x", pady=4)
+            tk.Button(
+                card,
+                text=self.ui_label("switch_to_register"),
+                command=lambda: self.show_multiplayer_auth_menu("register"),
+                font=("Segoe UI", 10, "bold"),
+                bg="#efe5d8",
+                fg="#5b3b26",
+                relief="flat",
+                cursor="hand2",
+                anchor="center",
+                justify="center",
+                wraplength=340,
+            ).pack(anchor="center", pady=(10, 0))
+            if self.remember_token:
+                self.menu_button(card, self.ui_label("stored_login"), self.restore_saved_login).pack(fill="x", pady=(10, 4))
+        else:
+            self.menu_button(card, self.ui_label("register"), self.submit_register).pack(fill="x", pady=4)
+            tk.Button(
+                card,
+                text=self.ui_label("switch_to_login"),
+                command=lambda: self.show_multiplayer_auth_menu("login"),
+                font=("Segoe UI", 10, "bold"),
+                bg="#efe5d8",
+                fg="#5b3b26",
+                relief="flat",
+                cursor="hand2",
+                anchor="center",
+                justify="center",
+                wraplength=340,
+            ).pack(anchor="center", pady=(10, 0))
         tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+
+    def continue_as_guest(self):
+        self.suppress_auth_prompt = bool(self.account_prompt_remind_var.get()) if self.account_prompt_remind_var is not None else False
+        self.save_settings()
+        self.show_main_menu()
 
     def show_delete_account_menu(self):
         if not self.user_name:
@@ -2742,7 +3009,8 @@ class UnchessApp:
         tk.Label(card, text=self.ui_label("confirm_password"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         tk.Entry(card, textvariable=self.delete_account_confirm_var, font=("Segoe UI", 12), show="*", width=28).pack(fill="x", pady=(4, 12))
         self.menu_button(card, self.ui_label("delete_account"), self.submit_delete_account).pack(fill="x", pady=4)
-        tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(pady=(18, 0))
+        back_action = self.profile_delete_back if callable(self.profile_delete_back) else self.show_main_menu
+        tk.Button(frame, text=self.ui_label("back"), command=back_action, padx=12).pack(pady=(18, 0))
 
     def show_multiplayer_placeholder(self):
         self.current_screen_refresh = self.show_multiplayer_placeholder
@@ -2773,7 +3041,7 @@ class UnchessApp:
             justify="center",
         ).pack(anchor="center", pady=(0, 24))
 
-        if self.user_name:
+        if self.has_confirmed_account():
             suffix = " (admin)" if self.is_admin else ""
             tk.Label(frame, text=f"{self.ui_label('logged_in')}: {self.user_name}{suffix}", font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(0, 18))
 
@@ -2784,8 +3052,6 @@ class UnchessApp:
         self.menu_button(menu_card, self.ui_label("join_room"), self.show_multiplayer_join_menu).pack(fill="x", pady=6)
         if self.is_admin:
             self.menu_button(menu_card, self.ui_label("active_rooms"), self.show_admin_rooms_menu).pack(fill="x", pady=6)
-        self.menu_button(menu_card, self.ui_label("delete_account"), self.show_delete_account_menu).pack(fill="x", pady=6)
-
         tk.Label(
             frame,
             text=f"{self.ui_label('host_auto_role')}: {self.role_policy_label(self.auto_role_policy)}",
@@ -2794,7 +3060,7 @@ class UnchessApp:
             fg="#6a6a6a",
         ).pack(anchor="center", pady=(18, 0))
 
-        if self.user_name:
+        if self.has_confirmed_account():
             tk.Button(frame, text=self.ui_label("logout"), command=self.submit_logout, padx=12).pack(pady=(18, 0))
         tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
 
@@ -2931,9 +3197,6 @@ class UnchessApp:
         if not username or not password:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_username_password"))
             return
-        if not username_is_ascii_safe(username):
-            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("username_ascii_only"))
-            return
         try:
             self.ensure_multiplayer_connection()
             self.multiplayer_client.send({"type": "register", "username": username, "password": password})
@@ -2961,24 +3224,35 @@ class UnchessApp:
 
     def restore_saved_login(self):
         if not self.remember_token:
-            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_stored_login"))
+            if self.auth_target_screen == "multiplayer":
+                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_stored_login"))
             return
         try:
             self.ensure_multiplayer_connection()
+            self.pending_multiplayer_action = {"kind": "restore"}
             self.multiplayer_client.send({"type": "restore_session", "remember_token": self.remember_token})
         except OSError as exc:
-            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
+            if self.auth_target_screen == "multiplayer":
+                messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
     def submit_logout(self):
         if self.multiplayer_client is None or not self.multiplayer_client.connected:
-            self.user_name = ""
-            self.session_role = ""
-            self.is_admin = False
-            self.remember_token = ""
-            self.save_settings()
-            self.show_multiplayer_auth_menu()
+            self.reset_account_state()
+            self.show_main_menu()
             return
         self.multiplayer_client.send({"type": "logout"})
+
+    def request_profile_snapshot(self):
+        if self.multiplayer_client is None or not self.multiplayer_client.connected:
+            if self.remember_token:
+                try:
+                    self.ensure_multiplayer_connection()
+                    self.pending_multiplayer_action = {"kind": "profile_restore"}
+                    self.multiplayer_client.send({"type": "restore_session", "remember_token": self.remember_token})
+                except OSError:
+                    return
+            return
+        self.multiplayer_client.send({"type": "profile_snapshot"})
 
     def submit_delete_account(self):
         password = self.delete_account_password_var.get() if self.delete_account_password_var is not None else ""
@@ -2992,11 +3266,23 @@ class UnchessApp:
         if not messagebox.askyesno(self.ui_label("delete_account"), self.ui_label("delete_account_confirm_prompt")):
             return
         if self.multiplayer_client is None or not self.multiplayer_client.connected:
+            if not self.remember_token:
+                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
+                return
             try:
                 self.ensure_multiplayer_connection()
+                self.pending_multiplayer_action = {
+                    "kind": "delete_account",
+                    "payload": {
+                        "type": "delete_account",
+                        "password": password,
+                        "confirm_password": confirm_password,
+                    },
+                }
+                self.multiplayer_client.send({"type": "restore_session", "remember_token": self.remember_token})
             except OSError as exc:
                 messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
-                return
+            return
         self.multiplayer_client.send(
             {
                 "type": "delete_account",
@@ -3257,8 +3543,11 @@ class UnchessApp:
             self.multiplayer_client.send({"type": "choose_role", "preference": choice, "move_limit": move_limit})
 
     def cancel_multiplayer(self):
-        self.close_multiplayer_client()
-        self.show_multiplayer_placeholder()
+        if self.multiplayer_client is not None and self.multiplayer_client.connected:
+            self.multiplayer_client.send({"type": "leave_room"})
+        self.multiplayer_room = None
+        self.multiplayer_is_host = False
+        self.show_post_login_multiplayer_view()
 
     def start_singleplayer(self):
         self.show_match_options(
@@ -3333,6 +3622,52 @@ class UnchessApp:
         self.current_view = UnchessGame(self, self.root, mode_config)
         self.current_screen_refresh = self.current_view.refresh_language
 
+    def return_to_main_menu(self):
+        if isinstance(self.current_view, UnchessGame):
+            mode = self.current_view.mode_config.get("mode")
+            if mode == "multiplayer" and self.multiplayer_client is not None and self.multiplayer_client.connected:
+                self.multiplayer_client.send({"type": "leave_room"})
+            elif mode == "spectator" and self.multiplayer_client is not None and self.multiplayer_client.connected:
+                self.multiplayer_client.send({"type": "admin_leave_spectate"})
+        self.show_main_menu()
+
+    def report_finished_local_match(self, game):
+        if game.mode_config.get("mode") != "bot":
+            return
+        if not self.user_name or self.session_role not in {"player", "admin"}:
+            return
+        player_color = game.mode_config.get("player_color")
+        if player_color not in {"white", "black"}:
+            return
+        own_points = game.score_white if player_color == "white" else game.score_black
+        enemy_points = game.score_black if player_color == "white" else game.score_white
+        if own_points > enemy_points:
+            outcome = "win"
+        elif own_points < enemy_points:
+            outcome = "loss"
+        else:
+            outcome = "draw"
+        payload = {
+            "type": "submit_local_result",
+            "mode": "bot",
+            "difficulty": game.mode_config.get("difficulty", ""),
+            "outcome": outcome,
+            "points": own_points,
+            "move_count": game.move_count,
+            "duration_sec": max(0, int(time.time() - getattr(game, "match_started_at", time.time()))),
+        }
+        if self.multiplayer_client is not None and self.multiplayer_client.connected and self.session_confirmed:
+            self.multiplayer_client.send(payload)
+            return
+        if not self.remember_token:
+            return
+        try:
+            self.ensure_multiplayer_connection()
+            self.pending_multiplayer_action = {"kind": "local_result", "payload": payload}
+            self.multiplayer_client.send({"type": "restore_session", "remember_token": self.remember_token})
+        except OSError:
+            return
+
     def handle_network_event(self, event):
         event_type = event.get("type")
         if event_type == "hello_ack":
@@ -3358,58 +3693,76 @@ class UnchessApp:
             self.pending_multiplayer_action = None
             return
         if event_type == "auth_error":
+            pending_kind = self.pending_multiplayer_action.get("kind") if self.pending_multiplayer_action else ""
+            if pending_kind in {"restore", "profile_restore", "local_result", "delete_account"}:
+                self.reset_account_state()
+            self.pending_multiplayer_action = None
             messagebox.showerror("Multiplayer", event.get("message", "Hitelesítési hiba"))
+            if pending_kind == "restore" and self.auth_target_screen == "main" and not self.suppress_auth_prompt:
+                self.show_startup_account_prompt()
             return
         if event_type == "register_success":
-            self.user_name = event.get("username", self.user_name)
-            self.save_settings()
-            messagebox.showinfo("Multiplayer", f"Sikeres regisztráció: {self.user_name}")
+            self.user_name = ""
+            self.auth_username_var = tk.StringVar(value="")
+            self.auth_password_var = tk.StringVar()
+            messagebox.showinfo("Multiplayer", self.ui_label("register_success_return_login"))
+            if self.auth_target_screen == "multiplayer":
+                self.show_multiplayer_auth_menu("login")
+            else:
+                self.show_startup_auth_menu("login")
             return
         if event_type == "login_success":
             self.user_name = event.get("username", "")
             self.session_role = str(event.get("session_role", "player") or "player")
             self.is_admin = self.session_role == "admin"
             self.remember_token = str(event.get("remember_token", "") or "")
+            self.session_confirmed = True
+            profile = event.get("profile")
+            if profile:
+                self.update_profile_snapshot(profile)
+            pending_action = self.pending_multiplayer_action
+            self.pending_multiplayer_action = None
             self.save_settings()
-            self.show_post_login_multiplayer_view()
+            if pending_action and pending_action.get("kind") == "local_result":
+                if self.multiplayer_client is not None and self.multiplayer_client.connected:
+                    self.multiplayer_client.send(pending_action["payload"])
+                return
+            if pending_action and pending_action.get("kind") == "delete_account":
+                if self.multiplayer_client is not None and self.multiplayer_client.connected:
+                    self.multiplayer_client.send(pending_action["payload"])
+                return
+            if pending_action and pending_action.get("kind") == "profile_restore":
+                self.request_profile_snapshot()
+                return
+            self.after_successful_auth()
             return
         if event_type == "logout_success":
-            self.user_name = ""
-            self.session_role = ""
-            self.is_admin = False
-            self.remember_token = ""
-            self.save_settings()
-            self.show_multiplayer_auth_menu()
+            self.reset_account_state()
+            self.close_multiplayer_client()
+            self.show_main_menu()
             return
         if event_type == "delete_account_success":
             deleted_username = event.get("username", self.user_name)
-            self.user_name = ""
-            self.session_role = ""
-            self.is_admin = False
-            self.remember_token = ""
-            self.save_settings()
+            self.reset_account_state()
             self.close_multiplayer_client()
             messagebox.showinfo(self.ui_label("multiplayer"), f"{self.ui_label('delete_account_success')}: {deleted_username}")
-            self.show_multiplayer_auth_menu()
+            self.show_startup_account_prompt()
             return
         if event_type == "force_logout":
-            self.user_name = ""
-            self.session_role = ""
-            self.is_admin = False
-            self.remember_token = ""
-            self.save_settings()
+            self.reset_account_state()
             self.close_multiplayer_client()
             messagebox.showwarning("Multiplayer", event.get("message", "Kijelentkeztetve."))
-            self.show_multiplayer_auth_menu()
+            self.show_startup_account_prompt()
             return
         if event_type == "banned":
-            self.user_name = ""
-            self.session_role = ""
-            self.is_admin = False
-            self.remember_token = ""
-            self.save_settings()
+            self.reset_account_state()
             messagebox.showerror("Multiplayer", f"{event.get('message', 'A fiók tiltva van.')}\nVitatás: {event.get('appeal_email', 'appeal@example.com')}")
-            self.show_multiplayer_auth_menu()
+            self.show_startup_account_prompt()
+            return
+        if event_type == "profile_snapshot":
+            self.update_profile_snapshot(event.get("profile"))
+            return
+        if event_type == "local_result_saved":
             return
         if event_type == "report_success":
             messagebox.showinfo("Multiplayer", f"Report elküldve: {event.get('reported_username', 'ismeretlen')}")
@@ -3450,13 +3803,17 @@ class UnchessApp:
             if immediate or seconds_remaining <= 0:
                 messagebox.showwarning("Multiplayer", message)
                 self.close_multiplayer_client()
-                self.show_multiplayer_placeholder()
+                self.show_main_menu()
                 return
             minutes = max(1, seconds_remaining // 60)
             messagebox.showwarning("Multiplayer", f"{message}\nHátralévő idő: ~{minutes} perc")
             return
         if event_type == "server_shutdown_cancelled":
             messagebox.showinfo("Multiplayer", event.get("message", "A tervezett szerverleállás megszakítva."))
+            return
+        if event_type == "left_room":
+            self.multiplayer_room = None
+            self.multiplayer_is_host = False
             return
         if event_type == "room_created":
             self.multiplayer_room = event["room"]
@@ -3506,13 +3863,15 @@ class UnchessApp:
                     messagebox.showinfo("Multiplayer", f"{leaver} kilépett. Nyertél.")
                 else:
                     messagebox.showinfo("Multiplayer", f"{leaver} kilépett. A szoba bezárult.")
-                self.close_multiplayer_client()
-                self.show_multiplayer_placeholder()
+                self.multiplayer_room = None
+                self.multiplayer_is_host = False
+                self.show_post_login_multiplayer_view()
                 return
             if self.multiplayer_status_var is not None:
                 self.multiplayer_status_var.set("Az ellenfél kilépett.")
-            self.close_multiplayer_client()
-            self.show_multiplayer_placeholder()
+            self.multiplayer_room = None
+            self.multiplayer_is_host = False
+            self.show_post_login_multiplayer_view()
             return
         if event_type == "move_broadcast":
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] in {"multiplayer", "spectator"}:
@@ -3552,8 +3911,162 @@ class UnchessApp:
         button.bind("<Button-1>", lambda _event: self.toggle_settings_panel())
         self.settings_button = button
         self.settings_anchor_widget = button
+        tk.Frame(parent, bg=BG_COLOR).pack(side="left", fill="x", expand=True)
+        self.mount_profile_button(parent)
+
+    def mount_profile_button(self, parent):
+        button = tk.Canvas(
+            parent,
+            bg=BG_COLOR,
+            cursor="hand2",
+            width=40,
+            height=40,
+            highlightthickness=0,
+            bd=0,
+        )
+        button.pack(side="right", anchor="ne")
+        self.draw_profile_icon(button)
+        button.bind("<Button-1>", lambda _event: self.toggle_profile_panel())
+        self.profile_button = button
+        self.profile_anchor_widget = button
+
+    def draw_profile_icon(self, canvas):
+        if canvas is None:
+            return
+        try:
+            if not int(canvas.winfo_exists()):
+                return
+        except tk.TclError:
+            return
+        canvas.delete("all")
+        fill = "#6d4c35" if self.profile_panel is not None else TEXT_COLOR
+        canvas.create_oval(13, 7, 27, 21, fill=fill, outline=fill)
+        canvas.create_arc(9, 16, 31, 36, start=0, extent=180, style="chord", fill=fill, outline=fill)
+
+    def toggle_profile_panel(self):
+        if self.profile_panel is not None:
+            self.close_profile_panel()
+        else:
+            self.open_profile_panel()
+
+    def close_profile_panel(self, redraw_icon=True):
+        if self.profile_panel is not None:
+            self.profile_panel.destroy()
+            self.profile_panel = None
+        if redraw_icon and self.profile_button is not None:
+            try:
+                if not int(self.profile_button.winfo_exists()):
+                    self.profile_button = None
+                    self.profile_anchor_widget = None
+                    return
+            except tk.TclError:
+                self.profile_button = None
+                self.profile_anchor_widget = None
+                return
+            self.draw_profile_icon(self.profile_button)
+
+    def format_stats_text(self, bucket):
+        stats = normalize_profile_stats(self.profile_stats).get(bucket, blank_stat_bucket())
+        return (
+            f"{self.ui_label('wins')}: {stats['wins']}  "
+            f"{self.ui_label('losses')}: {stats['losses']}  "
+            f"{self.ui_label('draws')}: {stats['draws']}  "
+            f"{self.ui_label('points')}: {stats['points']}"
+        )
+
+    def open_profile_panel(self):
+        if self.profile_anchor_widget is None:
+            return
+        try:
+            if not int(self.profile_anchor_widget.winfo_exists()):
+                self.profile_button = None
+                self.profile_anchor_widget = None
+                return
+        except tk.TclError:
+            self.profile_button = None
+            self.profile_anchor_widget = None
+            return
+        self.close_settings_panel()
+        if self.profile_panel is not None:
+            self.profile_panel.destroy()
+        self.profile_panel = tk.Frame(
+            self.root,
+            bg=BG_COLOR,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#dac7b1",
+            padx=16,
+            pady=16,
+        )
+        self.root.update_idletasks()
+        anchor_x = self.profile_anchor_widget.winfo_rootx() - self.root.winfo_rootx()
+        anchor_y = self.profile_anchor_widget.winfo_rooty() - self.root.winfo_rooty()
+        panel = self.profile_panel
+        tk.Label(panel, text=self.ui_label("profile"), font=("Segoe UI", 12, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+        signed_in = self.has_confirmed_account()
+        username = self.user_name if signed_in else self.ui_label("guest")
+        role_text = self.session_role if signed_in else self.ui_label("guest")
+        tk.Label(panel, text=username, font=("Segoe UI", 16, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w", pady=(8, 2))
+        tk.Label(panel, text=f"{self.ui_label('role')}: {role_text}", font=("Segoe UI", 10), bg=BG_COLOR, fg="#6a6a6a").pack(anchor="w", pady=(0, 10))
+
+        if signed_in and self.session_role != "console":
+            tk.Label(panel, text=self.ui_label("multiplayer_stats"), font=("Segoe UI", 10, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+            tk.Label(panel, text=self.format_stats_text("multiplayer"), font=("Consolas", 10), bg=BG_COLOR, fg="#5a5a5a", justify="left").pack(anchor="w", pady=(0, 8))
+            tk.Label(panel, text=self.ui_label("bot_stats"), font=("Segoe UI", 10, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+            tk.Label(panel, text=self.format_stats_text("bot"), font=("Consolas", 10), bg=BG_COLOR, fg="#5a5a5a", justify="left").pack(anchor="w", pady=(0, 8))
+            tk.Label(panel, text=self.ui_label("milestones_coming"), font=("Segoe UI", 10), bg=BG_COLOR, fg="#6a6a6a", wraplength=250, justify="left").pack(anchor="w", pady=(2, 10))
+        elif signed_in and self.session_role == "console":
+            tk.Label(panel, text=self.ui_label("console_profile_hint"), font=("Segoe UI", 10), bg=BG_COLOR, fg="#6a6a6a", wraplength=250, justify="left").pack(anchor="w", pady=(2, 10))
+        else:
+            tk.Label(panel, text=self.ui_label("guest_profile_hint"), font=("Segoe UI", 10), bg=BG_COLOR, fg="#6a6a6a", wraplength=250, justify="left").pack(anchor="w", pady=(2, 10))
+
+        action_row = tk.Frame(panel, bg=BG_COLOR)
+        action_row.pack(anchor="w", pady=(6, 0))
+        if signed_in and self.session_role in {"player", "admin", "console"}:
+            tk.Button(action_row, text=self.ui_label("refresh"), command=self.request_profile_snapshot, padx=10).pack(side="left", padx=(0, 6))
+            tk.Button(action_row, text=self.ui_label("logout"), command=self.submit_logout, padx=10).pack(side="left")
+        else:
+            tk.Button(action_row, text=self.ui_label("login"), command=lambda: self.show_startup_auth_menu("login"), padx=10).pack(side="left")
+
+        if signed_in and self.session_role in {"player", "admin"}:
+            tk.Button(
+                panel,
+                text=self.ui_label("delete_account"),
+                command=self.show_profile_delete_account_menu,
+                font=("Segoe UI", 10),
+                bg=BG_COLOR,
+                fg="#b00020",
+                activebackground=BG_COLOR,
+                activeforeground="#7f0015",
+                relief="flat",
+                cursor="hand2",
+                padx=4,
+                pady=4,
+            ).pack(anchor="w", pady=(12, 0))
+
+        panel.update_idletasks()
+        panel_width = panel.winfo_reqwidth()
+        panel_height = panel.winfo_reqheight()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        panel_x = max(8, min(anchor_x + self.profile_anchor_widget.winfo_width() - panel_width, root_width - panel_width - 8))
+        panel_y = max(8, min(anchor_y + self.profile_anchor_widget.winfo_height() + 8, root_height - panel_height - 8))
+        panel.place(x=panel_x, y=panel_y)
+        self.draw_profile_icon(self.profile_button)
+
+    def show_profile_delete_account_menu(self):
+        self.profile_delete_back = self.current_screen_refresh
+        self.close_profile_panel()
+        self.show_delete_account_menu()
 
     def draw_settings_icon(self, canvas, angle_degrees, scale):
+        if canvas is None:
+            return
+        try:
+            if not int(canvas.winfo_exists()):
+                return
+        except tk.TclError:
+            return
         canvas.delete("all")
         size = 40
         center = size / 2
@@ -3635,6 +4148,13 @@ class UnchessApp:
             self.settings_anim_job = None
         if self.settings_button is None:
             return
+        try:
+            if not int(self.settings_button.winfo_exists()):
+                self.settings_button = None
+                return
+        except tk.TclError:
+            self.settings_button = None
+            return
 
         self.settings_anim_start = time.perf_counter()
         self.settings_anim_duration_ms = duration_ms
@@ -3647,6 +4167,18 @@ class UnchessApp:
             return 0.5 - 0.5 * math.cos(math.pi * t)
 
         def step():
+            if self.settings_button is None:
+                self.settings_anim_job = None
+                return
+            try:
+                if not int(self.settings_button.winfo_exists()):
+                    self.settings_button = None
+                    self.settings_anim_job = None
+                    return
+            except tk.TclError:
+                self.settings_button = None
+                self.settings_anim_job = None
+                return
             elapsed_ms = (time.perf_counter() - self.settings_anim_start) * 1000.0
             t = min(1.0, elapsed_ms / self.settings_anim_duration_ms)
             eased = ease_in_out_sine(t)
@@ -3674,7 +4206,7 @@ class UnchessApp:
         else:
             self.open_settings_panel()
 
-    def close_settings_panel(self):
+    def close_settings_panel(self, redraw_icon=True):
         self.flush_settings_panel_inputs()
         if self.settings_panel is not None:
             self.root.unbind_all("<MouseWheel>")
@@ -3685,7 +4217,14 @@ class UnchessApp:
             self.settings_move_limit_var = None
             self.settings_host_var = None
             self.settings_port_var = None
-        if self.settings_button is not None and not self.settings_hovered:
+        if redraw_icon and self.settings_button is not None and not self.settings_hovered:
+            try:
+                if not int(self.settings_button.winfo_exists()):
+                    self.settings_button = None
+                    return
+            except tk.TclError:
+                self.settings_button = None
+                return
             self.draw_settings_icon(self.settings_button, self.settings_icon_angle, self.settings_icon_scale)
 
     def flush_settings_panel_inputs(self):
@@ -3709,6 +4248,15 @@ class UnchessApp:
 
     def open_settings_panel(self):
         if self.settings_parent is None or self.settings_anchor_widget is None:
+            return
+        try:
+            if not int(self.settings_anchor_widget.winfo_exists()):
+                self.settings_button = None
+                self.settings_anchor_widget = None
+                return
+        except tk.TclError:
+            self.settings_button = None
+            self.settings_anchor_widget = None
             return
 
         self.settings_panel = tk.Frame(
@@ -3939,10 +4487,12 @@ class UnchessApp:
                 "user_name": self.user_name,
                 "session_role": self.session_role,
                 "remember_token": self.remember_token,
+                "suppress_auth_prompt": self.suppress_auth_prompt,
                 "auto_role_policy": self.auto_role_policy,
                 "bot_tempo": self.bot_tempo,
                 "move_limit": self.default_move_limit,
                 "language": self.language,
+                "profile_stats": self.profile_stats,
             }
         )
 
@@ -4001,6 +4551,7 @@ class UnchessApp:
                 "bot": "Bot",
                 "bot_vs_bot": "Bot vs Bot",
                 "mode": "Mód",
+                "auto_role_policy": "Automatikus szerepválasztás",
                 "undo": "Undo",
                 "redo": "Redo",
                 "back_to_menu": "Vissza a menübe",
@@ -4038,11 +4589,20 @@ class UnchessApp:
                 "server": "Szerver",
                 "username": "Felhasználónév",
                 "password": "Jelszó",
+                "profile": "Profil",
+                "guest": "Vendég",
                 "remember_me": "Maradjak bejelentkezve",
                 "login": "Belépés",
                 "register": "Regisztráció",
+                "switch_to_register": "Még nincs fiókod? Regisztrálj egyet ide kattintva!",
+                "switch_to_login": "Már van fiókod? Jelentkezz be ide kattintva!",
+                "register_success_return_login": "Sikeres regisztráció. Most jelentkezz be a frissen létrehozott fiókoddal.",
+                "continue_as_guest": "Folytatás vendégként",
+                "dont_remind_again": "Ne emlékeztessen újra",
+                "account_prompt_title": "Belépés ajánlott",
+                "account_prompt_subtitle": "Ha belépsz, a rendszer menti a multiplayer és bot elleni eredményeidet. A multiplayer statok a hitelesebbek, a bot elleni eredmények külön kerülnek tárolásra.",
+                "account_auth_subtitle": "A helyi játék mehet vendégként is, de a mentett profilhoz és multiplayerhez bejelentkezés kell.",
                 "stored_login": "Tárolt belépés",
-                "password_reset": "Jelszó reset",
                 "account": "Fiók",
                 "save_new_password": "Új jelszó mentése",
                 "logged_in": "Bejelentkezve",
@@ -4062,6 +4622,8 @@ class UnchessApp:
                 "console_remove_admin": "Admin jog elvetele",
                 "console_refresh": "Frissites",
                 "console_empty_snapshot": "Nincs megjelenitheto fiok.",
+                "console_profile_hint": "Ez egy operátori session. Itt szerveroldali account- és moderációs műveletek vannak, nem meccsfigyelés.",
+                "guest_profile_hint": "Vendég módban játszol. A pontok és statok csak bejelentkezett fiókhoz menthetők.",
                 "create_room": "Új játék létrehozása",
                 "join_room": "Csatlakozás meglévőhöz",
                 "logout": "Kijelentkezés",
@@ -4084,14 +4646,18 @@ class UnchessApp:
                 "enter_room_code_error": "Adj meg egy játékkódot.",
                 "server_connect_error": "Nem sikerült csatlakozni a szerverhez",
                 "enter_username_password": "Adj meg felhasználónevet és jelszót.",
-                "username_ascii_only": "A felhasználónév csak angol betűket, számokat, aláhúzást és kötőjelet tartalmazhat.",
                 "no_stored_login": "Nincs mentett belépés.",
-                "reset_data_missing": "A reset adatok hiányoznak.",
                 "no_active_server_connection": "Nincs aktív kapcsolat a szerverhez.",
                 "confirm_report": "Biztosan reportolni szeretnéd az ellenfelet?",
                 "confirm_ban": "Biztosan tiltani szeretnéd az ellenfelet?",
                 "match_options_subtitle": "Állítsd be a parti lépéslimitjét.",
                 "player": "Játékos",
+                "wins": "Győzelem",
+                "losses": "Vereség",
+                "draws": "Döntetlen",
+                "multiplayer_stats": "Multiplayer statok",
+                "bot_stats": "Bot statok",
+                "milestones_coming": "A mérföldkövek később ide kerülnek.",
                 "now_moving": "Most mozog",
                 "points": "Pontok",
                 "moves": "Lépések",
@@ -4120,6 +4686,7 @@ class UnchessApp:
                 "spectating_status": "Megfigyeloi nezet. A jatek csak olvashato.",
                 "spectate_target": "Ban celpont",
                 "spectate_ended": "A spectate munkamenet befejezodott.",
+                "reason": "Ok",
             },
             "en": {
                 "choose_mode": "Choose game mode",
@@ -4128,6 +4695,7 @@ class UnchessApp:
                 "bot": "Bot",
                 "bot_vs_bot": "Bot vs Bot",
                 "mode": "Mode",
+                "auto_role_policy": "Auto role policy",
                 "undo": "Undo",
                 "redo": "Redo",
                 "back_to_menu": "Back to menu",
@@ -4165,11 +4733,20 @@ class UnchessApp:
                 "server": "Server",
                 "username": "Username",
                 "password": "Password",
+                "profile": "Profile",
+                "guest": "Guest",
                 "remember_me": "Stay signed in",
                 "login": "Login",
                 "register": "Register",
+                "switch_to_register": "Don't have an account yet? Register one here!",
+                "switch_to_login": "Already have an account? Click here to log in!",
+                "register_success_return_login": "Registration successful. Now log in with your new account.",
+                "continue_as_guest": "Continue as guest",
+                "dont_remind_again": "Don't remind me again",
+                "account_prompt_title": "Signing in is recommended",
+                "account_prompt_subtitle": "Sign in to save your multiplayer and bot-match results. Multiplayer stats are the trusted ones; bot results are stored separately.",
+                "account_auth_subtitle": "Local play can continue as a guest, but saved profiles and multiplayer require signing in.",
                 "stored_login": "Stored login",
-                "password_reset": "Password reset",
                 "account": "Account",
                 "save_new_password": "Save new password",
                 "logged_in": "Logged in",
@@ -4189,6 +4766,8 @@ class UnchessApp:
                 "console_remove_admin": "Remove admin",
                 "console_refresh": "Refresh",
                 "console_empty_snapshot": "There are no accounts to display.",
+                "console_profile_hint": "This is an operator session for server-side account and moderation actions, not for match supervision.",
+                "guest_profile_hint": "You are playing as a guest. Points and long-term stats are only saved for signed-in accounts.",
                 "create_room": "Create new game",
                 "join_room": "Join existing room",
                 "logout": "Logout",
@@ -4211,14 +4790,18 @@ class UnchessApp:
                 "enter_room_code_error": "Enter a room code.",
                 "server_connect_error": "Could not connect to the server",
                 "enter_username_password": "Enter a username and password.",
-                "username_ascii_only": "Usernames may only contain ASCII letters, numbers, underscores, and hyphens.",
                 "no_stored_login": "No stored login found.",
-                "reset_data_missing": "Reset data is missing.",
                 "no_active_server_connection": "There is no active server connection.",
                 "confirm_report": "Are you sure you want to report your opponent?",
                 "confirm_ban": "Are you sure you want to ban your opponent?",
                 "match_options_subtitle": "Set the match move limit.",
                 "player": "Player",
+                "wins": "Wins",
+                "losses": "Losses",
+                "draws": "Draws",
+                "multiplayer_stats": "Multiplayer stats",
+                "bot_stats": "Bot stats",
+                "milestones_coming": "Milestones will appear here later.",
                 "now_moving": "Now moving",
                 "points": "Points",
                 "moves": "Moves",
@@ -4247,6 +4830,7 @@ class UnchessApp:
                 "spectating_status": "Spectator view. This match is read-only.",
                 "spectate_target": "Ban target",
                 "spectate_ended": "The spectator session has ended.",
+                "reason": "Reason",
             },
         }
         lang = self.language if self.language in labels else "en"

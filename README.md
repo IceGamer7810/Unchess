@@ -24,6 +24,8 @@ The game is about building forced responses: keep escape routes for your own kin
 - pawn promotion
 - undo / redo
 - settings overlay panel
+- startup account prompt with guest flow and "don't remind me again"
+- top-right profile panel with cached stats
 - live language switching for menus and the active game view
 - multiplayer account flow:
   - register
@@ -31,6 +33,9 @@ The game is about building forced responses: keep escape routes for your own kin
   - logout
   - stay signed in
   - delete account
+- per-account stat categories:
+  - `multiplayer`: authoritative server-tracked wins / losses / draws / points
+  - `bot`: client-reported local bot results stored separately
 - role-aware multiplayer UI:
   - `player`: normal room creation / joining and reporting
   - `admin`: player UI plus active room list, spectating, and direct bans
@@ -45,6 +50,7 @@ The game is about building forced responses: keep escape routes for your own kin
 
 Multiplayer connects to the dedicated server. Room creation, joining, role selection, and move synchronization are all server-backed.
 Admins can inspect active matches through a spectator view. Console sessions are separated from match supervision and are reserved for account/server operations.
+On startup the client can prompt for account login, registration, or guest mode. Guest mode still works for local play, but multiplayer requires a server-confirmed account session.
 
 ## Settings
 
@@ -81,6 +87,7 @@ server_port = 7777
 user_name = ""
 remember_token = ""
 session_role = ""
+suppress_auth_prompt = false
 
 [gameplay]
 auto_role_policy = "ask"
@@ -89,6 +96,18 @@ move_limit = -1
 
 [ui]
 language = "en"
+
+[stats.multiplayer]
+wins = 0
+losses = 0
+draws = 0
+points = 0
+
+[stats.bot]
+wins = 0
+losses = 0
+draws = 0
+points = 0
 ```
 
 If the file does not exist, the client creates it automatically. It is gitignored.
