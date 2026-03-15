@@ -1810,7 +1810,8 @@ class UnchessGame:
             return
         new_value = not self.opponent_can_report()
         action_label = self.app.ui_label("console_grant_report") if new_value else self.app.ui_label("console_revoke_report")
-        if not messagebox.askyesno(action_label, self.app.ui_label("confirm_revoke_opponent_report")):
+        confirm_key = "confirm_grant_opponent_report" if new_value else "confirm_revoke_opponent_report"
+        if not messagebox.askyesno(action_label, self.app.ui_label(confirm_key)):
             return
         self.network_client.send({"type": "admin_set_opponent_report_permission", "can_report": new_value})
 
@@ -5072,6 +5073,7 @@ class UnchessApp:
                 "admin_ingame_tools_subtitle": "In-match admin muveletek az aktualis ellenfeledhez.",
                 "report_allowed": "Report jog: van",
                 "report_revoked": "Report jog: elveve",
+                "confirm_grant_opponent_report": "Biztosan vissza akarod adni az ellenfeled report jogat?",
                 "confirm_revoke_opponent_report": "Biztosan el akarod venni az ellenfeled report jogat?",
                 "console_grant_report": "Report jog megadasa",
                 "console_revoke_report": "Report jog elvetele",
@@ -5236,6 +5238,7 @@ class UnchessApp:
                 "admin_ingame_tools_subtitle": "In-match admin actions for your current opponent.",
                 "report_allowed": "Report permission: granted",
                 "report_revoked": "Report permission: revoked",
+                "confirm_grant_opponent_report": "Are you sure you want to restore your opponent's report permission?",
                 "confirm_revoke_opponent_report": "Are you sure you want to revoke your opponent's report permission?",
                 "console_grant_report": "Grant report permission",
                 "console_revoke_report": "Revoke report permission",
