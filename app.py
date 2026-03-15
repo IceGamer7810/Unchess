@@ -1746,6 +1746,43 @@ class UnchessGame:
 
         self.draw()
 
+    def report_opponent(self):
+        if self.mode_config["mode"] != "multiplayer" or self.network_client is None:
+            return
+        if not messagebox.askyesno(self.app.ui_label("report"), self.app.ui_label("confirm_report")):
+            return
+        self.network_client.send({"type": "report_player"})
+
+    def ban_opponent(self):
+        if self.mode_config["mode"] != "multiplayer" or self.network_client is None or not self.app.is_admin:
+            return
+        if not messagebox.askyesno(self.app.ui_label("ban"), self.app.ui_label("confirm_ban")):
+            return
+        self.network_client.send({"type": "ban_player"})
+
+    def ban_spectated_target(self):
+        if self.mode_config["mode"] != "spectator" or self.network_client is None or not self.app.is_admin:
+            return
+        target_slot = self.mode_config.get("ban_target_slot")
+        if target_slot not in {"host", "guest"}:
+            return
+        if not messagebox.askyesno(self.app.ui_label("ban"), self.app.ui_label("confirm_ban")):
+            return
+        self.network_client.send(
+            {
+                "type": "admin_ban_room_player",
+                "room_code": self.mode_config.get("room_code", ""),
+                "target_slot": target_slot,
+            }
+        )
+
+    def toggle_spectate_target(self):
+        if self.mode_config["mode"] != "spectator":
+            return
+        current = self.mode_config.get("ban_target_slot", "host")
+        self.mode_config["ban_target_slot"] = "guest" if current == "host" else "host"
+        self.update_sidebar()
+
     def generate_legal_moves(self, row, col):
         return self.generate_legal_moves_for_board(self.board, self.side_to_move, row, col)
 
@@ -4132,17 +4169,21 @@ class UnchessApp:
             self.multiplayer_room = room
             if self.multiplayer_client is None:
                 return
-            if room["host_connected"] and room["guest_connected"]:
-                if self.multiplayer_room_var is not None:
-                    self.multiplayer_room_var.set(room["room_code"])
-                assignment = room["role_assignment"]
-                # If we created the room, we are the host. Otherwise we are the guest.
-                player_color = assignment["host"] if self.multiplayer_is_host else assignment["guest"]
+            assignment = room.get("role_assignment") or {}
+            game_state = event.get("game_state")
+            if self.multiplayer_room_var is not None:
+                self.multiplayer_room_var.set(room.get("room_code", ""))
+            host_color = assignment.get("host")
+            guest_color = assignment.get("guest")
+            if host_color in {"white", "black"} and guest_color not in {"white", "black"}:
+                guest_color = "black" if host_color == "white" else "white"
+            player_color = host_color if self.multiplayer_is_host else guest_color
+            if player_color in {"white", "black"}:
                 self.start_multiplayer_game(
                     player_color,
-                    room["room_code"],
+                    room.get("room_code", ""),
                     room.get("move_limit", self.default_move_limit),
-                    initial_state=event.get("game_state"),
+                    initial_state=game_state,
                 )
             return
         if event_type == "player_left":

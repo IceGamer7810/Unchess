@@ -24,6 +24,7 @@ The game is about building forced responses: keep escape routes for your own kin
 - pawn promotion
 - undo / redo
 - settings overlay panel
+- scrollable menu-style screens for smaller windows
 - startup account prompt with guest flow and "don't remind me again"
 - top-right profile panel with cached stats
 - live language switching for menus and the active game view
@@ -40,6 +41,15 @@ The game is about building forced responses: keep escape routes for your own kin
   - `player`: normal room creation / joining and reporting
   - `admin`: player UI plus active room list, spectating, and direct bans
   - `console`: server/account management UI after logging in with the console username and master key
+- console UI:
+  - player list
+  - live search
+  - account detail view
+  - password reset
+  - account deletion
+  - ban / unban
+  - grant / remove admin
+  - grant / revoke report permission
 
 ## Game modes
 
@@ -51,6 +61,14 @@ The game is about building forced responses: keep escape routes for your own kin
 Multiplayer connects to the dedicated server. Room creation, joining, role selection, and move synchronization are all server-backed.
 Admins can inspect active matches through a spectator view. Console sessions are separated from match supervision and are reserved for account/server operations.
 On startup the client can prompt for account login, registration, or guest mode. Guest mode still works for local play, but multiplayer requires a server-confirmed account session.
+
+## Reporting and stats
+
+- players can report an opponent once per active multiplayer match
+- duplicate same-match reports are rejected with a normal UI message
+- local bot results are stored separately from multiplayer results
+- multiplayer stats are server-authoritative
+- bot stats are client-reported and therefore less trustworthy than multiplayer stats
 
 ## Settings
 
