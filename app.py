@@ -1282,6 +1282,7 @@ class UnchessGame:
             self.pause_button.pack(side="right", padx=(0, 8))
         else:
             self.pause_button = None
+        self.admin_report_button = None
 
         board_area = tk.Frame(self.container, bg=BG_COLOR)
         board_area.pack(fill="both", expand=True, pady=(12, 12))
@@ -1293,7 +1294,8 @@ class UnchessGame:
             admin_panel.grid_propagate(False)
             tk.Label(admin_panel, text=self.app.ui_label("admin_ingame_tools"), font=("Segoe UI", 12, "bold"), bg="#efe5d8", fg=TEXT_COLOR, justify="left").pack(anchor="w", pady=(0, 10))
             tk.Label(admin_panel, text=self.app.ui_label("admin_ingame_tools_subtitle"), font=("Segoe UI", 10), bg="#efe5d8", fg="#5a5a5a", wraplength=150, justify="left").pack(anchor="w", pady=(0, 12))
-            tk.Button(admin_panel, text=self.app.ui_label("console_revoke_report"), command=self.revoke_opponent_report_permission, padx=10, pady=8, wraplength=140, justify="center").pack(fill="x", pady=(0, 8))
+            self.admin_report_button = tk.Button(admin_panel, command=self.toggle_opponent_report_permission, padx=10, pady=8, wraplength=140, justify="center")
+            self.admin_report_button.pack(fill="x", pady=(0, 8))
             tk.Button(admin_panel, text=self.app.ui_label("ban"), command=self.ban_opponent, padx=10, pady=8, wraplength=140, justify="center").pack(fill="x")
             board_column = 1
         board_area.grid_columnconfigure(board_column, weight=1)
@@ -1451,6 +1453,7 @@ class UnchessGame:
         if self.ban_button is not None:
             self.ban_button.configure(text=self.app.ui_label("ban"))
         self.update_sidebar()
+        self.refresh_admin_actions()
         self.draw()
 
     def snapshot_state(self):
@@ -1776,12 +1779,39 @@ class UnchessGame:
             return
         self.network_client.send({"type": "ban_player"})
 
-    def revoke_opponent_report_permission(self):
+    def opponent_can_report(self):
+        room = self.mode_config.get("room") or {}
+        if self.mode_config["mode"] != "multiplayer":
+            return True
+        if self.mode_config.get("player_color") == "white":
+            return bool(room.get("guest_can_report", True))
+        return bool(room.get("host_can_report", True))
+
+    def refresh_admin_actions(self):
+        if self.admin_report_button is None:
+            return
+        if self.opponent_can_report():
+            self.admin_report_button.configure(text=self.app.ui_label("console_revoke_report"))
+        else:
+            self.admin_report_button.configure(text=self.app.ui_label("console_grant_report"))
+
+    def set_opponent_report_permission_state(self, can_report):
+        room = dict(self.mode_config.get("room") or {})
+        if self.mode_config.get("player_color") == "white":
+            room["guest_can_report"] = bool(can_report)
+        else:
+            room["host_can_report"] = bool(can_report)
+        self.mode_config["room"] = room
+        self.refresh_admin_actions()
+
+    def toggle_opponent_report_permission(self):
         if self.mode_config["mode"] != "multiplayer" or self.network_client is None or not self.app.is_admin:
             return
-        if not messagebox.askyesno(self.app.ui_label("console_revoke_report"), self.app.ui_label("confirm_revoke_opponent_report")):
+        new_value = not self.opponent_can_report()
+        action_label = self.app.ui_label("console_grant_report") if new_value else self.app.ui_label("console_revoke_report")
+        if not messagebox.askyesno(action_label, self.app.ui_label("confirm_revoke_opponent_report")):
             return
-        self.network_client.send({"type": "admin_revoke_opponent_report"})
+        self.network_client.send({"type": "admin_set_opponent_report_permission", "can_report": new_value})
 
     def ban_spectated_target(self):
         if self.mode_config["mode"] != "spectator" or self.network_client is None or not self.app.is_admin:
@@ -3973,7 +4003,7 @@ class UnchessApp:
             }
         )
 
-    def start_multiplayer_game(self, player_color, room_code, move_limit, initial_state=None):
+    def start_multiplayer_game(self, player_color, room_code, move_limit, initial_state=None, room=None):
         self.start_game(
             {
                 "mode": "multiplayer",
@@ -3984,6 +4014,7 @@ class UnchessApp:
                 "room_code": room_code,
                 "move_limit": move_limit,
                 "initial_state": initial_state,
+                "room": room or {},
             }
         )
 
@@ -4147,6 +4178,9 @@ class UnchessApp:
             messagebox.showinfo("Multiplayer", f"Játékos tiltva: {event.get('banned_username', 'ismeretlen')}")
             return
         if event_type == "admin_action_success":
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config.get("mode") == "multiplayer":
+                if "can_report" in event:
+                    self.current_view.set_opponent_report_permission_state(bool(event.get("can_report")))
             messagebox.showinfo(self.ui_label("multiplayer"), event.get("message", self.ui_label("admin_action_done")))
             return
         if event_type == "console_action_success":
@@ -4237,6 +4271,7 @@ class UnchessApp:
                     room.get("room_code", ""),
                     room.get("move_limit", self.default_move_limit),
                     initial_state=game_state,
+                    room=room,
                 )
             return
         if event_type == "player_left":
