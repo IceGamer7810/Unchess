@@ -21,6 +21,9 @@ BOARD_PIXELS = BOARD_SIZE * SQUARE_SIZE
 SIDEBAR_WIDTH = 260
 WINDOW_WIDTH = BOARD_PIXELS + SIDEBAR_WIDTH
 WINDOW_HEIGHT = BOARD_PIXELS + 70
+MIN_WINDOW_WIDTH = 640
+MIN_WINDOW_HEIGHT = 420
+MIN_BOARD_SQUARE_PIXELS = 12
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 7777
 BASE_DIR = Path(__file__).resolve().parent
@@ -1151,7 +1154,7 @@ class UnchessGame:
         self.root.title("Unchess")
         self.root.configure(bg=BG_COLOR)
         self.root.resizable(True, True)
-        self.root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
         self.container = tk.Frame(parent, bg=BG_COLOR)
         self.container.pack(fill="both", expand=True)
@@ -1528,7 +1531,7 @@ class UnchessGame:
         canvas_width = max(1, self.canvas.winfo_width())
         canvas_height = max(1, self.canvas.winfo_height())
         board_pixels = min(canvas_width, canvas_height)
-        square_size = max(24, board_pixels / BOARD_SIZE)
+        square_size = max(MIN_BOARD_SQUARE_PIXELS, board_pixels / BOARD_SIZE)
         board_pixels = square_size * BOARD_SIZE
         offset_x = (canvas_width - board_pixels) / 2
         offset_y = (canvas_height - board_pixels) / 2
@@ -2366,7 +2369,7 @@ class UnchessApp:
         self.root.configure(bg=BG_COLOR)
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.root.resizable(True, True)
-        self.root.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
         self.root.protocol("WM_DELETE_WINDOW", self.on_app_close)
         self.current_view = None
         self.pending_bot_difficulty = None
@@ -2438,6 +2441,7 @@ class UnchessApp:
         self.profile_delete_back = None
         self.current_screen_refresh = None
         self.current_scroll_canvas = None
+        self.global_return_action = None
         self.root.bind_all("<MouseWheel>", self.on_global_mousewheel, add="+")
         self.root.bind_all("<Button-4>", self.on_global_mousewheel, add="+")
         self.root.bind_all("<Button-5>", self.on_global_mousewheel, add="+")
@@ -2459,6 +2463,7 @@ class UnchessApp:
         self.root.destroy()
 
     def clear_view(self):
+        self.clear_global_return_action()
         self.close_profile_panel(redraw_icon=False)
         self.close_settings_panel(redraw_icon=False)
         if self.current_view is not None:
@@ -2469,6 +2474,18 @@ class UnchessApp:
         self.profile_anchor_widget = None
         self.settings_button = None
         self.settings_anchor_widget = None
+
+    def set_global_return_action(self, callback):
+        self.global_return_action = callback
+        self.root.bind("<Return>", self.on_global_return)
+
+    def clear_global_return_action(self):
+        self.global_return_action = None
+        self.root.unbind("<Return>")
+
+    def on_global_return(self, _event):
+        if callable(self.global_return_action):
+            self.global_return_action()
 
     def create_scrollable_view(self, padx=40, pady=36):
         shell = tk.Frame(self.root, bg=BG_COLOR)
@@ -3160,6 +3177,7 @@ class UnchessApp:
 
         self.menu_button(menu_card, self.ui_label("create_room"), self.multiplayer_create_room).pack(fill="x", pady=6)
         self.menu_button(menu_card, self.ui_label("join_room"), self.show_multiplayer_join_menu).pack(fill="x", pady=6)
+        self.set_global_return_action(self.multiplayer_create_room)
         if self.is_admin:
             self.menu_button(menu_card, self.ui_label("active_rooms"), self.show_admin_rooms_menu).pack(fill="x", pady=6)
         tk.Label(
@@ -3333,10 +3351,16 @@ class UnchessApp:
         details.append(self.ui_label("banned") if record.get("is_banned") else self.ui_label("not_banned"))
         details.append(self.ui_label("report_allowed") if record.get("can_report", True) else self.ui_label("report_revoked"))
         tk.Label(frame, text=" | ".join(details), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        stats = normalize_profile_stats(record.get("stats"))
+        tk.Label(frame, text=self.ui_label("multiplayer_stats"), font=("Segoe UI", 10, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center")
+        tk.Label(frame, text=self.format_external_stats_text(stats, "multiplayer"), font=("Consolas", 10), bg=BG_COLOR, fg="#5a5a5a", justify="center").pack(anchor="center", pady=(0, 8))
+        tk.Label(frame, text=self.ui_label("bot_stats"), font=("Segoe UI", 10, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center")
+        tk.Label(frame, text=self.format_external_stats_text(stats, "bot"), font=("Consolas", 10), bg=BG_COLOR, fg="#5a5a5a", justify="center").pack(anchor="center", pady=(0, 18))
 
         menu_card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
         menu_card.pack(anchor="center")
         self.menu_button(menu_card, self.ui_label("console_reset_password"), lambda u=self.console_selected_username: self.show_console_password_reset_menu(u)).pack(fill="x", pady=4)
+        self.menu_button(menu_card, self.ui_label("console_clear_balance"), lambda u=self.console_selected_username: self.show_console_clear_balance_menu(u)).pack(fill="x", pady=4)
         self.menu_button(menu_card, self.ui_label("console_delete_user"), lambda u=self.console_selected_username: self.show_console_delete_user_menu(u)).pack(fill="x", pady=4)
         if record.get("is_banned"):
             self.menu_button(menu_card, self.ui_label("console_unban_user"), lambda u=self.console_selected_username: self.show_console_ban_action_menu(u, False)).pack(fill="x", pady=4)
@@ -3391,6 +3415,29 @@ class UnchessApp:
         self.console_action_confirm_var = tk.BooleanVar(value=False)
         tk.Checkbutton(card, text=self.ui_label("console_delete_confirm"), variable=self.console_action_confirm_var, bg="#efe5d8", activebackground="#efe5d8", justify="left", wraplength=360).pack(anchor="w", pady=(0, 12))
         self.menu_button(card, self.ui_label("delete_account"), self.submit_console_delete_user).pack(fill="x", pady=4)
+        tk.Button(frame, text=self.ui_label("back"), command=lambda u=username: self.show_console_account_details(u), padx=12).pack(pady=(18, 0))
+
+    def show_console_clear_balance_menu(self, username):
+        self.console_selected_username = username
+        self.current_screen_refresh = lambda u=username: self.show_console_clear_balance_menu(u)
+        self.clear_view()
+        frame = self.create_scrollable_view()
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+        tk.Label(frame, text=self.ui_label("console_clear_balance"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=username, font=("Segoe UI", 11, "bold"), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center", pady=(0, 18))
+        record = self.find_console_user(username) or {}
+        stats = normalize_profile_stats(record.get("stats"))
+        tk.Label(frame, text=self.ui_label("multiplayer_stats"), font=("Segoe UI", 10, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center")
+        tk.Label(frame, text=self.format_external_stats_text(stats, "multiplayer"), font=("Consolas", 10), bg=BG_COLOR, fg="#5a5a5a", justify="center").pack(anchor="center", pady=(0, 8))
+        tk.Label(frame, text=self.ui_label("bot_stats"), font=("Segoe UI", 10, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center")
+        tk.Label(frame, text=self.format_external_stats_text(stats, "bot"), font=("Consolas", 10), bg=BG_COLOR, fg="#5a5a5a", justify="center").pack(anchor="center", pady=(0, 18))
+        card = tk.Frame(frame, bg="#efe5d8", padx=22, pady=22)
+        card.pack(anchor="center")
+        self.console_action_confirm_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(card, text=self.ui_label("console_clear_balance_confirm"), variable=self.console_action_confirm_var, bg="#efe5d8", activebackground="#efe5d8", justify="left", wraplength=360).pack(anchor="w", pady=(0, 12))
+        self.menu_button(card, self.ui_label("console_clear_balance"), self.submit_console_clear_balance).pack(fill="x", pady=4)
         tk.Button(frame, text=self.ui_label("back"), command=lambda u=username: self.show_console_account_details(u), padx=12).pack(pady=(18, 0))
 
     def show_console_ban_action_menu(self, username, should_ban):
@@ -3488,6 +3535,8 @@ class UnchessApp:
         entry = tk.Entry(frame, textvariable=self.multiplayer_join_code_var, font=("Consolas", 20), justify="center", width=10)
         entry.pack(pady=(0, 18))
         entry.focus_set()
+        entry.bind("<Return>", lambda _event: self.multiplayer_join_room())
+        self.set_global_return_action(self.multiplayer_join_room)
 
         self.menu_button(frame, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
         tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(pady=(18, 0))
@@ -3699,6 +3748,19 @@ class UnchessApp:
             messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
             return
         self.multiplayer_client.send({"type": "console_set_report_permission", "username": username, "can_report": False})
+
+    def submit_console_clear_balance(self):
+        username = self.console_target_username()
+        if not username:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("console_target_required"))
+            return
+        if self.console_action_confirm_var is None or not self.console_action_confirm_var.get():
+            messagebox.showerror(self.ui_label("console_title"), self.ui_label("console_action_confirm_required"))
+            return
+        if self.multiplayer_client is None:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
+            return
+        self.multiplayer_client.send({"type": "console_clear_balance", "username": username})
 
     def render_console_snapshot(self, users):
         self.console_users_cache = [record for record in users if isinstance(record, dict)]
@@ -4309,6 +4371,15 @@ class UnchessApp:
             f"{self.ui_label('losses')}: {stats['losses']}  "
             f"{self.ui_label('draws')}: {stats['draws']}  "
             f"{self.ui_label('points')}: {stats['points']}"
+        )
+
+    def format_external_stats_text(self, stats, bucket):
+        safe_stats = normalize_profile_stats(stats).get(bucket, blank_stat_bucket())
+        return (
+            f"{self.ui_label('wins')}: {safe_stats['wins']}  "
+            f"{self.ui_label('losses')}: {safe_stats['losses']}  "
+            f"{self.ui_label('draws')}: {safe_stats['draws']}  "
+            f"{self.ui_label('points')}: {safe_stats['points']}"
         )
 
     def open_profile_panel(self):
@@ -4949,6 +5020,7 @@ class UnchessApp:
                 "console_tools_soon": "Valassz egy kulon nezetet a lenti muveletekhez.",
                 "new_password": "Uj jelszo",
                 "console_reset_password": "Jelszo reset",
+                "console_clear_balance": "Pontok torlese",
                 "console_delete_user": "Fiok torlese",
                 "console_target_required": "Adj meg egy felhasznalonevet.",
                 "console_delete_confirm": "Biztosan torolni szeretned ezt a fiokot?",
@@ -4964,6 +5036,7 @@ class UnchessApp:
                 "search": "Kereses",
                 "console_action_confirm": "Biztos vagyok benne, hogy ezt a muveletet akarom vegrehajtani.",
                 "console_action_confirm_required": "Jelold be a megerosito negyzetet.",
+                "console_clear_balance_confirm": "Biztos vagyok benne, hogy torolni akarom ennek a fioknak az osszes multiplayer es bot pontjat/statjat.",
                 "admin": "Admin",
                 "banned": "Tiltva",
                 "not_banned": "Nincs tiltva",
@@ -5106,6 +5179,7 @@ class UnchessApp:
                 "console_tools_soon": "Choose a dedicated workflow below.",
                 "new_password": "New password",
                 "console_reset_password": "Reset password",
+                "console_clear_balance": "Clear balance",
                 "console_delete_user": "Delete account",
                 "console_target_required": "Enter a username.",
                 "console_delete_confirm": "Are you sure you want to delete this account?",
@@ -5121,6 +5195,7 @@ class UnchessApp:
                 "search": "Search",
                 "console_action_confirm": "I am sure I want to perform this action.",
                 "console_action_confirm_required": "Tick the confirmation checkbox first.",
+                "console_clear_balance_confirm": "I understand that this will clear this account's multiplayer and bot stats.",
                 "admin": "Admin",
                 "banned": "Banned",
                 "not_banned": "Not banned",
