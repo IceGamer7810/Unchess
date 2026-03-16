@@ -1502,6 +1502,8 @@ class UnchessGame:
                 pass
             self.elapsed_match_job = None
         self.update_sidebar()
+        if self.game_over:
+            return
         self.elapsed_match_job = self.root.after(1000, self.schedule_elapsed_refresh)
 
     def color_label(self, color, upper=False):
@@ -2572,9 +2574,19 @@ class UnchessGame:
         return f"{prefix} Döntetlen."
 
     def end_game(self, message):
+        frozen_elapsed = self.current_elapsed_match_sec()
         self.game_over = True
+        self.elapsed_match_base_sec = frozen_elapsed
+        self.elapsed_match_anchor = time.time()
+        if self.elapsed_match_job is not None:
+            try:
+                self.root.after_cancel(self.elapsed_match_job)
+            except tk.TclError:
+                pass
+            self.elapsed_match_job = None
         self.status_var.set(message)
         self.draw()
+        self.update_sidebar()
         self.app.report_finished_local_match(self)
         messagebox.showinfo(self.app.ui_label("game_over_title"), message)
 
