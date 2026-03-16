@@ -2458,6 +2458,7 @@ class UnchessApp:
         self.public_rooms_list_container = None
         self.admin_rooms_cache = []
         self.pending_multiplayer_action = None
+        self.socket_session_confirmed = False
         self.auth_username_var = None
         self.auth_password_var = None
         self.auth_remember_var = None
@@ -2637,6 +2638,7 @@ class UnchessApp:
         self.multiplayer_host_controls = None
         self.multiplayer_move_limit_var = None
         self.pending_multiplayer_action = None
+        self.socket_session_confirmed = False
         self.ignore_next_disconnect = False
 
     def reset_account_state(self):
@@ -2680,6 +2682,34 @@ class UnchessApp:
         client.connect(name=self.user_name or "Unchess Player")
         self.ignore_next_disconnect = False
         self.multiplayer_client = client
+        self.socket_session_confirmed = False
+
+    def send_authenticated_multiplayer_action(self, kind, payload):
+        self.ensure_multiplayer_connection()
+        if self.multiplayer_client is None:
+            return False
+        if self.socket_session_confirmed:
+            if kind in {"create", "join"}:
+                self.pending_multiplayer_action = {
+                    "kind": kind,
+                    "payload": payload,
+                    "code": payload.get("room_code", ""),
+                    "is_public": payload.get("is_public"),
+                    "move_limit": payload.get("move_limit"),
+                }
+            self.multiplayer_client.send(payload)
+            return True
+        if self.remember_token:
+            self.pending_multiplayer_action = {
+                "kind": kind,
+                "payload": payload,
+                "code": payload.get("room_code", ""),
+                "is_public": payload.get("is_public"),
+                "move_limit": payload.get("move_limit"),
+            }
+            self.multiplayer_client.send({"type": "restore_session", "remember_token": self.remember_token})
+            return True
+        return False
 
     def show_multiplayer_entry(self):
         self.auth_target_screen = "multiplayer"
@@ -3268,7 +3298,11 @@ class UnchessApp:
 
     def request_public_rooms_snapshot(self):
         try:
-            self.ensure_multiplayer_connection()
+            payload = {
+                "type": "list_public_rooms",
+                "min_move_limit": -1,
+                "max_move_limit": -1,
+            }
         except OSError as exc:
             messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
             return
@@ -3278,13 +3312,13 @@ class UnchessApp:
             minimum = maximum = -1
         elif minimum > maximum:
             minimum, maximum = maximum, minimum
-        self.multiplayer_client.send(
-            {
-                "type": "list_public_rooms",
-                "min_move_limit": minimum,
-                "max_move_limit": maximum,
-            }
-        )
+        payload["min_move_limit"] = minimum
+        payload["max_move_limit"] = maximum
+        try:
+            if not self.send_authenticated_multiplayer_action("public_rooms", payload):
+                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
+        except OSError as exc:
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
     def show_public_room_browser(self, fetch=True):
         self.current_screen_refresh = lambda: self.show_multiplayer_join_menu(fetch=False)
@@ -3306,7 +3340,7 @@ class UnchessApp:
         content_grid.pack(fill="both", expand=True)
         content_grid.grid_columnconfigure(0, weight=1, uniform="join_layout")
         content_grid.grid_columnconfigure(1, weight=2, uniform="join_layout")
-        content_grid.grid_rowconfigure(1, weight=1)
+        content_grid.grid_rowconfigure(2, weight=1)
 
         join_card = tk.Frame(content_grid, bg="#efe5d8", padx=18, pady=18)
         join_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 14))
@@ -3456,17 +3490,17 @@ class UnchessApp:
         slider_canvas.bind("<Configure>", on_slider_configure)
         redraw_browser_slider()
 
-        list_card = tk.Frame(content_grid, bg="#efe5d8", padx=18, pady=18, height=220)
-        list_card.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        action_row = tk.Frame(content_grid, bg=BG_COLOR)
+        action_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 14))
+        tk.Button(action_row, text=self.ui_label("refresh"), command=self.request_public_rooms_snapshot, padx=12).pack(side="left", padx=(0, 4))
+        tk.Button(action_row, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(side="left", padx=(4, 0))
+
+        list_card = tk.Frame(content_grid, bg="#efe5d8", padx=18, pady=18, height=160)
+        list_card.grid(row=2, column=0, columnspan=2, sticky="nsew")
         list_card.pack_propagate(False)
         tk.Label(list_card, text=self.ui_label("browse_public_rooms"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w", pady=(0, 8))
         self.public_rooms_list_container = list_card
         self.render_public_room_rows()
-
-        action_row = tk.Frame(frame, bg=BG_COLOR)
-        action_row.pack(anchor="center", pady=(18, 0))
-        tk.Button(action_row, text=self.ui_label("refresh"), command=lambda: self.show_multiplayer_join_menu(fetch=True), padx=12).pack(side="left", padx=4)
-        tk.Button(action_row, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(side="left", padx=4)
         if fetch:
             self.request_public_rooms_snapshot()
 
@@ -3804,10 +3838,10 @@ class UnchessApp:
         if move_limit < 0:
             move_limit = -1
         is_public = True
+        payload = {"type": "create_room", "is_public": is_public, "move_limit": move_limit}
         try:
-            self.ensure_multiplayer_connection()
-            self.pending_multiplayer_action = {"kind": "create", "is_public": is_public, "move_limit": move_limit}
-            self.multiplayer_client.send({"type": "create_room", "is_public": is_public, "move_limit": move_limit})
+            if not self.send_authenticated_multiplayer_action("create", payload):
+                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
         except OSError as exc:
             messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
@@ -3821,10 +3855,10 @@ class UnchessApp:
         if not code:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_room_code_error"))
             return
+        payload = {"type": "join_room", "room_code": code}
         try:
-            self.ensure_multiplayer_connection()
-            self.pending_multiplayer_action = {"kind": "join", "code": code}
-            self.multiplayer_client.send({"type": "join_room", "room_code": code})
+            if not self.send_authenticated_multiplayer_action("join", payload):
+                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
         except OSError as exc:
             messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
@@ -4221,14 +4255,13 @@ class UnchessApp:
         if move_limit < 0:
             move_limit = -1
         is_public = bool(self.multiplayer_create_public_var.get()) if self.multiplayer_create_public_var is not None else True
-        self.multiplayer_client.send(
-            {
-                "type": "update_room_settings",
-                "room_code": self.multiplayer_room.get("room_code", ""),
-                "is_public": is_public,
-                "move_limit": move_limit,
-            }
-        )
+        payload = {
+            "type": "update_room_settings",
+            "room_code": self.multiplayer_room.get("room_code", ""),
+            "is_public": is_public,
+            "move_limit": move_limit,
+        }
+        self.send_authenticated_multiplayer_action("update_room_settings", payload)
 
     def on_waiting_room_move_limit_change(self, _value=None):
         if self.multiplayer_create_move_limit_var is None or self.multiplayer_create_move_limit_label_var is None:
@@ -4512,6 +4545,7 @@ class UnchessApp:
             self.is_admin = self.session_role == "admin"
             self.remember_token = str(event.get("remember_token", "") or "")
             self.session_confirmed = True
+            self.socket_session_confirmed = True
             profile = event.get("profile")
             if profile:
                 self.update_profile_snapshot(profile)
@@ -4524,6 +4558,15 @@ class UnchessApp:
                 return
             if pending_action and pending_action.get("kind") == "delete_account":
                 if self.multiplayer_client is not None and self.multiplayer_client.connected:
+                    self.multiplayer_client.send(pending_action["payload"])
+                return
+            if pending_action and pending_action.get("kind") in {"public_rooms", "update_room_settings"}:
+                if self.multiplayer_client is not None and self.multiplayer_client.connected:
+                    self.multiplayer_client.send(pending_action["payload"])
+                return
+            if pending_action and pending_action.get("kind") in {"create", "join"}:
+                if self.multiplayer_client is not None and self.multiplayer_client.connected:
+                    self.pending_multiplayer_action = pending_action
                     self.multiplayer_client.send(pending_action["payload"])
                 return
             if pending_action and pending_action.get("kind") == "profile_restore":
