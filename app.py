@@ -104,7 +104,15 @@ def detect_default_language():
 
 
 def blank_stat_bucket():
-    return {"wins": 0, "losses": 0, "draws": 0, "points": 0}
+    return {
+        "wins": 0,
+        "losses": 0,
+        "draws": 0,
+        "points": 0,
+        "matches": 0,
+        "total_duration_sec": 0,
+        "average_duration_sec": 0,
+    }
 
 
 def default_profile_stats():
@@ -119,7 +127,7 @@ def normalize_profile_stats(stats):
         raw_bucket = stats.get(bucket, {})
         if not isinstance(raw_bucket, dict):
             continue
-        for key in ("wins", "losses", "draws", "points"):
+        for key in ("wins", "losses", "draws", "points", "matches", "total_duration_sec", "average_duration_sec"):
             try:
                 normalized[bucket][key] = int(raw_bucket.get(key, 0) or 0)
             except (TypeError, ValueError):
@@ -149,12 +157,18 @@ def write_client_settings(settings):
         f"wins = {multiplayer_stats['wins']}\n"
         f"losses = {multiplayer_stats['losses']}\n"
         f"draws = {multiplayer_stats['draws']}\n"
-        f"points = {multiplayer_stats['points']}\n\n"
+        f"points = {multiplayer_stats['points']}\n"
+        f"matches = {multiplayer_stats['matches']}\n"
+        f"total_duration_sec = {multiplayer_stats['total_duration_sec']}\n"
+        f"average_duration_sec = {multiplayer_stats['average_duration_sec']}\n\n"
         "[stats.bot]\n"
         f"wins = {bot_stats['wins']}\n"
         f"losses = {bot_stats['losses']}\n"
         f"draws = {bot_stats['draws']}\n"
         f"points = {bot_stats['points']}\n"
+        f"matches = {bot_stats['matches']}\n"
+        f"total_duration_sec = {bot_stats['total_duration_sec']}\n"
+        f"average_duration_sec = {bot_stats['average_duration_sec']}\n"
     )
     SETTINGS_PATH.write_text(content, encoding="utf-8")
 
@@ -1198,6 +1212,14 @@ class UnchessGame:
         self.network_client = self.mode_config.get("network_client")
         self.pending_network_move = None
         self.pending_network_sync = None
+        self.pending_promotion_display = None
+        self.pending_promotion_requires_choice = False
+        self.pending_promotion_overlay = None
+        self.pending_promotion_job = None
+        self.pending_promotion_cycle_index = 0
+        self.elapsed_match_base_sec = 0
+        self.elapsed_match_anchor = time.time()
+        self.elapsed_match_job = None
 
         self.status_var = tk.StringVar()
         self.score_var = tk.StringVar()
@@ -1385,14 +1407,23 @@ class UnchessGame:
             self.move_count = int(initial_state.get("move_count", self.move_count))
             self.game_over = bool(initial_state.get("game_over", False))
 
+        self.set_room_timing(self.mode_config.get("room"))
         self.draw()
         self.start_turn()
+        self.schedule_elapsed_refresh()
 
     def destroy(self):
         self.destroyed = True
         self.game_over = True
         self.bot_paused = True
         self.pending_bot_move = None
+        self.clear_pending_promotion_ui()
+        if self.elapsed_match_job is not None:
+            try:
+                self.root.after_cancel(self.elapsed_match_job)
+            except tk.TclError:
+                pass
+            self.elapsed_match_job = None
         if self.mode_config["mode"] == "spectator" and self.network_client is not None:
             try:
                 self.network_client.send({"type": "admin_leave_spectate"})
@@ -1433,6 +1464,45 @@ class UnchessGame:
         if self.mode_config["mode"] == "spectator":
             return self.app.ui_label("spectator")
         return self.app.ui_label("multiplayer")
+
+    def set_room_timing(self, room_payload):
+        if not isinstance(room_payload, dict):
+            return
+        if "room_code" in room_payload:
+            self.mode_config["room"] = room_payload
+        elapsed = room_payload.get("elapsed_match_sec")
+        if elapsed is None and room_payload.get("started_at"):
+            try:
+                elapsed = max(0, int(time.time() - float(room_payload["started_at"])))
+            except (TypeError, ValueError):
+                elapsed = 0
+        try:
+            self.elapsed_match_base_sec = max(0, int(elapsed or 0))
+        except (TypeError, ValueError):
+            self.elapsed_match_base_sec = 0
+        self.elapsed_match_anchor = time.time()
+        if not self.destroyed:
+            self.update_sidebar()
+
+    def current_elapsed_match_sec(self):
+        if self.mode_config["mode"] not in {"multiplayer", "spectator"}:
+            return max(0, int(time.time() - self.match_started_at))
+        room_payload = self.mode_config.get("room") or {}
+        if not room_payload.get("started_at") and self.elapsed_match_base_sec <= 0:
+            return 0
+        return max(0, int(self.elapsed_match_base_sec + (time.time() - self.elapsed_match_anchor)))
+
+    def schedule_elapsed_refresh(self):
+        if self.destroyed:
+            return
+        if self.elapsed_match_job is not None:
+            try:
+                self.root.after_cancel(self.elapsed_match_job)
+            except tk.TclError:
+                pass
+            self.elapsed_match_job = None
+        self.update_sidebar()
+        self.elapsed_match_job = self.root.after(1000, self.schedule_elapsed_refresh)
 
     def color_label(self, color, upper=False):
         key = f"{color}_{'upper' if upper else 'lower'}"
@@ -1637,9 +1707,14 @@ class UnchessGame:
     def draw_pieces(self):
         square_size, _, _, _ = self.board_metrics()
         piece_font_size = max(16, int(square_size * 0.52))
+        pending = self.pending_promotion_display if isinstance(self.pending_promotion_display, dict) else None
+        pending_from = tuple(pending.get("from", ())) if pending else None
+        pending_to = tuple(pending.get("to", ())) if pending else None
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
                 if self.animating and self.animating_from == (row, col):
+                    continue
+                if pending_from == (row, col) or pending_to == (row, col):
                     continue
                 piece = self.board[row][col]
                 if not piece:
@@ -1658,14 +1733,29 @@ class UnchessGame:
                     font=("Segoe UI Symbol", piece_font_size),
                     fill=fill,
                 )
+        if pending_to is not None and len(pending_to) == 2 and in_bounds(*pending_to):
+            draw_row, draw_col = self.to_display_coords(*pending_to)
+            x1, y1, _ = self.square_to_canvas(draw_row, draw_col)
+            cx = x1 + square_size / 2
+            cy = y1 + square_size / 2
+            cycle = ["R", "N", "B", "Q"] if pending.get("color") == "white" else ["r", "n", "b", "q"]
+            piece = cycle[self.pending_promotion_cycle_index % len(cycle)]
+            self.canvas.create_text(
+                cx,
+                cy,
+                text=PIECE_SYMBOLS[piece],
+                font=("Segoe UI Symbol", piece_font_size),
+                fill=TEXT_COLOR,
+            )
 
     def update_sidebar(self):
         player_name = self.color_label(self.current_actor(), upper=True)
         moving_side = self.color_label(self.side_to_move, upper=False)
         self.turn_var.set(f"{self.app.ui_label('player')}: {player_name}\n{self.app.ui_label('now_moving')}: {moving_side}")
         limit_text = "∞" if self.move_limit < 0 else str(self.move_limit)
+        elapsed_text = self.app.format_duration_display(self.current_elapsed_match_sec())
         self.score_var.set(
-            f"{self.app.ui_label('points')}\n{self.app.ui_label('white_upper')}: {self.score_white}\n{self.app.ui_label('black_upper')}: {self.score_black}\n{self.app.ui_label('moves')}: {self.move_count}/{limit_text}"
+            f"{self.app.ui_label('points')}\n{self.app.ui_label('white_upper')}: {self.score_white}\n{self.app.ui_label('black_upper')}: {self.score_black}\n{self.app.ui_label('moves')}: {self.move_count}/{limit_text}\n{self.app.ui_label('elapsed_match_time')}: {elapsed_text}"
         )
         self.info_var.set(self.app.ui_label("rule_text"))
         if self.mode_config["mode"] == "bot":
@@ -1729,7 +1819,7 @@ class UnchessGame:
         return draw_row, draw_col
 
     def on_mouse_click(self, event):
-        if self.animating or self.game_over or self.is_bot_turn() or self.pending_network_move is not None or self.bot_thinking or self.mode_config["mode"] == "spectator":
+        if self.animating or self.game_over or self.is_bot_turn() or self.pending_network_move is not None or self.bot_thinking or self.mode_config["mode"] == "spectator" or self.pending_promotion_display is not None:
             return
         if self.mode_config["mode"] == "multiplayer" and not self.is_local_multiplayer_turn():
             return
@@ -2187,7 +2277,7 @@ class UnchessGame:
                     "to": list(move["to"]),
                     "piece": move["piece"],
                     "captured": move["captured"],
-                    "promotion": move["promotion"],
+                    "promotion": None,
                 },
             }
         )
@@ -2213,7 +2303,7 @@ class UnchessGame:
         self.board = self.simulate_move(self.board, move)
         if move["promotion"]:
             promotion_piece = move["promotion"]
-            if not bot_turn_before_move:
+            if self.mode_config["mode"] not in {"multiplayer", "spectator"} and not bot_turn_before_move:
                 chosen_piece = self.ask_promotion(piece_color(move["piece"]))
                 if chosen_piece:
                     promotion_piece = chosen_piece
@@ -2250,6 +2340,7 @@ class UnchessGame:
                 self.side_to_move = server_sync["side_to_move"]
         self.animating = False
         self.animating_from = None
+        self.clear_pending_promotion_ui(destroy_overlay=False)
         self.draw()
         self.start_turn()
         if server_sync is not None and server_sync.get("game_over") and not self.game_over:
@@ -2293,10 +2384,83 @@ class UnchessGame:
         dialog.wait_window()
         return result["value"]
 
+    def clear_pending_promotion_ui(self, destroy_overlay=True):
+        if self.pending_promotion_job is not None:
+            try:
+                self.root.after_cancel(self.pending_promotion_job)
+            except ValueError:
+                pass
+            self.pending_promotion_job = None
+        self.pending_promotion_display = None
+        self.pending_promotion_requires_choice = False
+        if destroy_overlay and self.pending_promotion_overlay is not None:
+            if self.pending_promotion_overlay.winfo_exists():
+                self.pending_promotion_overlay.destroy()
+            self.pending_promotion_overlay = None
+
+    def schedule_pending_promotion_cycle(self):
+        if self.destroyed or self.pending_promotion_display is None:
+            self.pending_promotion_job = None
+            return
+        self.pending_promotion_cycle_index = (self.pending_promotion_cycle_index + 1) % 4
+        self.draw()
+        self.pending_promotion_job = self.root.after(200, self.schedule_pending_promotion_cycle)
+
+    def submit_promotion_choice(self, code):
+        if self.network_client is None:
+            return
+        self.pending_promotion_requires_choice = False
+        if self.pending_promotion_overlay is not None and self.pending_promotion_overlay.winfo_exists():
+            self.pending_promotion_overlay.destroy()
+        self.pending_promotion_overlay = None
+        self.status_var.set(self.app.ui_label("promotion_choice_sent"))
+        self.network_client.send({"type": "submit_promotion", "promotion": code})
+
+    def show_promotion_pending(self, payload, requires_choice=False):
+        move = payload.get("move") or {}
+        from_sq = tuple(move.get("from", ()))
+        to_sq = tuple(move.get("to", ()))
+        color = str(payload.get("color", "white") or "white").lower()
+        if len(from_sq) != 2 or len(to_sq) != 2:
+            return
+        self.pending_promotion_display = {"from": from_sq, "to": to_sq, "color": color}
+        self.pending_promotion_requires_choice = bool(requires_choice)
+        self.pending_promotion_cycle_index = 0
+        if self.pending_promotion_job is None:
+            self.schedule_pending_promotion_cycle()
+        self.status_var.set(self.app.ui_label("promotion_choose_prompt") if requires_choice else self.app.ui_label("promotion_opponent_choosing"))
+        if not requires_choice:
+            if self.pending_promotion_overlay is not None and self.pending_promotion_overlay.winfo_exists():
+                self.pending_promotion_overlay.destroy()
+            self.pending_promotion_overlay = None
+            self.draw()
+            return
+        if self.pending_promotion_overlay is not None and self.pending_promotion_overlay.winfo_exists():
+            self.pending_promotion_overlay.destroy()
+        overlay = tk.Frame(self.container, bg="#d7c2a3", highlightthickness=2, highlightbackground="#6a4428", padx=18, pady=18)
+        overlay.place(relx=0.5, rely=0.5, anchor="center")
+        self.pending_promotion_overlay = overlay
+        tk.Label(overlay, text=self.app.ui_label("promotion_title"), font=("Segoe UI", 12, "bold"), bg="#d7c2a3", fg=TEXT_COLOR).pack(anchor="center", pady=(0, 6))
+        tk.Label(overlay, text=self.app.ui_label("promotion_choose_prompt"), font=("Segoe UI", 10), bg="#d7c2a3", fg="#4e4e4e").pack(anchor="center", pady=(0, 10))
+        row = tk.Frame(overlay, bg="#d7c2a3")
+        row.pack()
+        for code, label_key in [("Q", "queen"), ("R", "rook"), ("B", "bishop"), ("N", "knight")]:
+            piece = code if color == "white" else code.lower()
+            tk.Button(
+                row,
+                text=f"{PIECE_SYMBOLS[piece]} {self.app.ui_label(label_key)}",
+                command=lambda c=code: self.submit_promotion_choice(c),
+                padx=10,
+                pady=8,
+            ).pack(side="left", padx=4)
+        self.draw()
+
     def start_turn(self):
         if self.destroyed or not self.container.winfo_exists():
             return
         if self.game_over:
+            return
+        if self.pending_promotion_display is not None:
             return
 
         if self.state_history.count(self.repetition_key(self.board, self.side_to_move)) >= 3:
@@ -2453,7 +2617,10 @@ class UnchessApp:
         self.multiplayer_create_public_var = None
         self.multiplayer_browser_min_var = None
         self.multiplayer_browser_max_var = None
+        self.multiplayer_browser_min_duration_var = None
+        self.multiplayer_browser_max_duration_var = None
         self.multiplayer_browser_filter_summary_var = None
+        self.multiplayer_browser_duration_filter_summary_var = None
         self.multiplayer_is_host = False
         self.multiplayer_waiting_room_active = False
         self.multiplayer_role_choice_open = False
@@ -3299,6 +3466,17 @@ class UnchessApp:
     def format_move_limit_display(self, move_limit):
         return self.ui_label("unlimited") if int(move_limit) < 0 else str(int(move_limit))
 
+    def format_duration_display(self, total_seconds):
+        try:
+            total_seconds = max(0, int(total_seconds or 0))
+        except (TypeError, ValueError):
+            total_seconds = 0
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
+
     def browser_filter_summary(self):
         minimum = self.multiplayer_browser_min_var.get() if self.multiplayer_browser_min_var is not None else -1
         maximum = self.multiplayer_browser_max_var.get() if self.multiplayer_browser_max_var is not None else -1
@@ -3308,12 +3486,23 @@ class UnchessApp:
             minimum, maximum = maximum, minimum
         return f"{minimum} - {maximum}"
 
+    def browser_duration_filter_summary(self):
+        minimum = self.multiplayer_browser_min_duration_var.get() if self.multiplayer_browser_min_duration_var is not None else -1
+        maximum = self.multiplayer_browser_max_duration_var.get() if self.multiplayer_browser_max_duration_var is not None else -1
+        if minimum < 0 or maximum < 0:
+            return self.ui_label("browser_unlimited_filter")
+        if minimum > maximum:
+            minimum, maximum = maximum, minimum
+        return f"{self.format_duration_display(minimum)} - {self.format_duration_display(maximum)}"
+
     def request_public_rooms_snapshot(self):
         try:
             payload = {
                 "type": "list_public_rooms",
                 "min_move_limit": -1,
                 "max_move_limit": -1,
+                "min_host_avg_duration_sec": -1,
+                "max_host_avg_duration_sec": -1,
             }
         except OSError as exc:
             messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
@@ -3326,6 +3515,14 @@ class UnchessApp:
             minimum, maximum = maximum, minimum
         payload["min_move_limit"] = minimum
         payload["max_move_limit"] = maximum
+        duration_minimum = self.multiplayer_browser_min_duration_var.get() if self.multiplayer_browser_min_duration_var is not None else -1
+        duration_maximum = self.multiplayer_browser_max_duration_var.get() if self.multiplayer_browser_max_duration_var is not None else -1
+        if duration_minimum < 0 or duration_maximum < 0:
+            duration_minimum = duration_maximum = -1
+        elif duration_minimum > duration_maximum:
+            duration_minimum, duration_maximum = duration_maximum, duration_minimum
+        payload["min_host_avg_duration_sec"] = duration_minimum
+        payload["max_host_avg_duration_sec"] = duration_maximum
         try:
             if not self.send_authenticated_multiplayer_action("public_rooms", payload):
                 messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("no_active_server_connection"))
@@ -3369,6 +3566,7 @@ class UnchessApp:
         entry = tk.Entry(join_card, textvariable=self.multiplayer_join_code_var, font=("Consolas", 20), justify="center", width=10)
         entry.pack(pady=(8, 12))
         entry.focus_set()
+        entry.bind("<Return>", lambda _event: self.multiplayer_join_room())
         self.set_global_return_action(self.multiplayer_join_room)
         self.menu_button(join_card, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
 
@@ -3502,6 +3700,134 @@ class UnchessApp:
         slider_canvas.bind("<Configure>", on_slider_configure)
         redraw_browser_slider()
 
+        tk.Frame(filter_card, bg="#d8cab6", height=1).pack(fill="x", pady=(14, 14))
+        tk.Label(filter_card, text=self.ui_label("host_avg_match_time_filter"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        if self.multiplayer_browser_min_duration_var is None:
+            self.multiplayer_browser_min_duration_var = tk.IntVar(value=-1)
+        if self.multiplayer_browser_max_duration_var is None:
+            self.multiplayer_browser_max_duration_var = tk.IntVar(value=3600)
+        self.multiplayer_browser_duration_filter_summary_var = tk.StringVar(value=self.browser_duration_filter_summary())
+        tk.Label(filter_card, textvariable=self.multiplayer_browser_duration_filter_summary_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg="#5a5a5a").pack(anchor="center", pady=(6, 8))
+        duration_labels_row = tk.Frame(filter_card, bg="#efe5d8")
+        duration_labels_row.pack(fill="x")
+        duration_labels_row.grid_columnconfigure(0, weight=1)
+        duration_labels_row.grid_columnconfigure(1, weight=1)
+        tk.Label(duration_labels_row, text=self.ui_label("minimum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").grid(row=0, column=0, sticky="ew")
+        tk.Label(duration_labels_row, text=self.ui_label("maximum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").grid(row=0, column=1, sticky="ew")
+        duration_canvas = tk.Canvas(filter_card, height=82, bg="#efe5d8", highlightthickness=0, bd=0)
+        duration_canvas.pack(fill="x", pady=(6, 0))
+        duration_margin = 28
+        duration_y = 48
+        duration_max = 3600
+        duration_handle_radius = 11
+        duration_handle_hit_radius = 18
+        dragging_duration_handle = {"name": None}
+        duration_width = {"value": 520}
+
+        def clamp_duration_values():
+            minimum_duration = self.multiplayer_browser_min_duration_var.get()
+            maximum_duration = self.multiplayer_browser_max_duration_var.get()
+            if minimum_duration >= 0 and maximum_duration >= 0 and minimum_duration > maximum_duration:
+                if dragging_duration_handle["name"] == "min":
+                    self.multiplayer_browser_max_duration_var.set(minimum_duration)
+                else:
+                    self.multiplayer_browser_min_duration_var.set(maximum_duration)
+
+        def duration_value_to_x(value):
+            slider_left = duration_margin
+            slider_right = max(slider_left + 40, duration_width["value"] - duration_margin)
+            if value < 0:
+                return slider_left
+            ratio = value / duration_max
+            return slider_left + ratio * (slider_right - slider_left)
+
+        def x_to_duration_value(x_pos):
+            slider_left = duration_margin
+            slider_right = max(slider_left + 40, duration_width["value"] - duration_margin)
+            if x_pos <= slider_left + 6:
+                return -1
+            ratio = (x_pos - slider_left) / (slider_right - slider_left)
+            ratio = max(0.0, min(1.0, ratio))
+            return int(round(ratio * duration_max))
+
+        def hit_test_duration_handle(x_pos, y_pos):
+            min_x = duration_value_to_x(self.multiplayer_browser_min_duration_var.get())
+            max_x = duration_value_to_x(self.multiplayer_browser_max_duration_var.get())
+            if abs(x_pos - min_x) <= duration_handle_hit_radius and abs(y_pos - duration_y) <= duration_handle_hit_radius:
+                return "min"
+            if abs(x_pos - max_x) <= duration_handle_hit_radius and abs(y_pos - duration_y) <= duration_handle_hit_radius:
+                return "max"
+            return None
+
+        def redraw_duration_slider():
+            clamp_duration_values()
+            duration_canvas.delete("all")
+            minimum_duration = self.multiplayer_browser_min_duration_var.get()
+            maximum_duration = self.multiplayer_browser_max_duration_var.get()
+            slider_left = duration_margin
+            slider_right = max(slider_left + 40, duration_width["value"] - duration_margin)
+            center_x = (slider_left + slider_right) / 2
+            min_x = duration_value_to_x(minimum_duration)
+            max_x = duration_value_to_x(maximum_duration)
+            duration_canvas.create_text(slider_left, duration_y + 22, text="-1", fill="#6a6a6a", font=("Segoe UI", 9, "bold"))
+            duration_canvas.create_text(slider_right, duration_y + 22, text=self.format_duration_display(duration_max), fill="#6a6a6a", font=("Segoe UI", 9, "bold"))
+            duration_canvas.create_line(slider_left, duration_y, slider_right, duration_y, fill="#b9aa96", width=8, capstyle="round")
+            duration_canvas.create_line(min_x, duration_y, max_x, duration_y, fill="#7d5a3c", width=8, capstyle="round")
+            duration_canvas.create_line(slider_left, duration_y - 10, slider_left, duration_y + 10, fill="#8f7e69", width=2)
+            duration_canvas.create_line(slider_right, duration_y - 10, slider_right, duration_y + 10, fill="#8f7e69", width=2)
+            if minimum_duration < 0 or maximum_duration < 0:
+                duration_canvas.create_text(center_x, 16, text=self.ui_label("unlimited"), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
+            else:
+                duration_canvas.create_text(min_x, 16, text=self.format_duration_display(minimum_duration), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
+                duration_canvas.create_text(max_x, 16, text=self.format_duration_display(maximum_duration), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
+            duration_canvas.create_oval(min_x - duration_handle_radius, duration_y - duration_handle_radius, min_x + duration_handle_radius, duration_y + duration_handle_radius, fill="#fff7ea", outline="#6a4428", width=2)
+            duration_canvas.create_oval(max_x - duration_handle_radius, duration_y - duration_handle_radius, max_x + duration_handle_radius, duration_y + duration_handle_radius, fill="#efe0c7", outline="#6a4428", width=2)
+            duration_canvas.create_text(min_x, duration_y, text="MIN", fill="#6a4428", font=("Segoe UI", 7, "bold"))
+            duration_canvas.create_text(max_x, duration_y, text="MAX", fill="#6a4428", font=("Segoe UI", 7, "bold"))
+            if self.multiplayer_browser_duration_filter_summary_var is not None:
+                self.multiplayer_browser_duration_filter_summary_var.set(self.browser_duration_filter_summary())
+
+        def on_duration_press(event):
+            handle_name = hit_test_duration_handle(event.x, event.y)
+            if handle_name is None:
+                return
+            dragging_duration_handle["name"] = handle_name
+
+        def on_duration_drag(event):
+            if dragging_duration_handle["name"] is None:
+                return
+            new_value = x_to_duration_value(event.x)
+            if dragging_duration_handle["name"] == "min":
+                current_max = self.multiplayer_browser_max_duration_var.get()
+                if current_max >= 0 and new_value >= 0 and new_value > current_max:
+                    new_value = current_max
+                self.multiplayer_browser_min_duration_var.set(new_value)
+            else:
+                current_min = self.multiplayer_browser_min_duration_var.get()
+                if current_min >= 0 and new_value >= 0 and new_value < current_min:
+                    new_value = current_min
+                self.multiplayer_browser_max_duration_var.set(new_value)
+            redraw_duration_slider()
+
+        def on_duration_release(_event):
+            if dragging_duration_handle["name"] is None:
+                return
+            dragging_duration_handle["name"] = None
+            redraw_duration_slider()
+            self.request_public_rooms_snapshot()
+
+        def on_duration_configure(event):
+            new_width = max(320, int(event.width))
+            if new_width != duration_width["value"]:
+                duration_width["value"] = new_width
+                redraw_duration_slider()
+
+        duration_canvas.bind("<Button-1>", on_duration_press)
+        duration_canvas.bind("<B1-Motion>", on_duration_drag)
+        duration_canvas.bind("<ButtonRelease-1>", on_duration_release)
+        duration_canvas.bind("<Configure>", on_duration_configure)
+        redraw_duration_slider()
+
         action_row = tk.Frame(content_grid, bg=BG_COLOR)
         action_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 14))
         tk.Button(action_row, text=self.ui_label("refresh"), command=self.request_public_rooms_snapshot, padx=12).pack(side="left", padx=(0, 4))
@@ -3533,7 +3859,8 @@ class UnchessApp:
             host = room.get("host_username") or "?"
             code = room.get("room_code", "??????")
             move_limit = self.format_move_limit_display(room.get("move_limit", -1))
-            text = f"{code} | {self.ui_label('host')}: {host} | {self.ui_label('move_limit')}: {move_limit}"
+            avg_duration = self.format_duration_display(room.get("host_avg_match_duration_sec", 0))
+            text = f"{code} | {self.ui_label('host')}: {host} | {self.ui_label('move_limit')}: {move_limit} | {self.ui_label('host_avg_match_time')}: {avg_duration}"
             tk.Label(row, text=text, font=("Consolas", 11), bg="#efe5d8", fg=TEXT_COLOR, anchor="w", justify="left").pack(side="left", fill="x", expand=True)
             tk.Button(row, text=self.ui_label("join"), command=lambda c=code: self.multiplayer_join_room(c), padx=10).pack(side="right")
 
@@ -4658,6 +4985,8 @@ class UnchessApp:
             if self.public_rooms_list_container is not None and self.public_rooms_list_container.winfo_exists():
                 if self.multiplayer_browser_filter_summary_var is not None:
                     self.multiplayer_browser_filter_summary_var.set(self.browser_filter_summary())
+                if self.multiplayer_browser_duration_filter_summary_var is not None:
+                    self.multiplayer_browser_duration_filter_summary_var.set(self.browser_duration_filter_summary())
                 self.render_public_room_rows()
             return
         if event_type == "spectate_started":
@@ -4716,6 +5045,8 @@ class UnchessApp:
             self.multiplayer_room = event["room"]
             if self.multiplayer_room_var is not None:
                 self.multiplayer_room_var.set(event["room"]["room_code"])
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] in {"multiplayer", "spectator"}:
+                self.current_view.set_room_timing(event["room"])
             if not event["room"].get("started"):
                 reopen_role_choice = bool(self.multiplayer_is_host and self.multiplayer_role_choice_open and event["room"].get("guest_connected"))
                 self.show_multiplayer_waiting_room(self.multiplayer_is_host, event["room"]["room_code"])
@@ -4745,6 +5076,13 @@ class UnchessApp:
                     room=room,
                 )
             return
+        if event_type == "room_elapsed":
+            room_code = event.get("room_code", "")
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] in {"multiplayer", "spectator"}:
+                current_code = self.current_view.mode_config.get("room_code", "")
+                if current_code == room_code:
+                    self.current_view.set_room_timing({"room_code": room_code, "elapsed_match_sec": event.get("elapsed_match_sec", 0)})
+            return
         if event_type == "player_left":
             room = event["room"]
             self.multiplayer_room = room
@@ -4755,6 +5093,12 @@ class UnchessApp:
                 return
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "multiplayer":
                 leaver = event.get("player_name", self.ui_label("unknown_player"))
+                if self.current_view.game_over:
+                    self.current_view.clear_pending_promotion_ui()
+                    self.multiplayer_room = None
+                    self.multiplayer_is_host = False
+                    self.show_post_login_multiplayer_view()
+                    return
                 if event.get("game_was_started"):
                     messagebox.showinfo(self.ui_label("multiplayer"), self.ui_label("opponent_left_you_win").format(username=leaver))
                 else:
@@ -4771,7 +5115,17 @@ class UnchessApp:
             return
         if event_type == "move_broadcast":
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] in {"multiplayer", "spectator"}:
+                self.current_view.clear_pending_promotion_ui()
                 self.current_view.apply_network_move(event)
+            return
+        if event_type == "promotion_pending":
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] in {"multiplayer", "spectator"}:
+                self.current_view.show_promotion_pending(event, requires_choice=False)
+            return
+        if event_type == "promotion_required":
+            if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "multiplayer":
+                self.current_view.show_promotion_pending(event, requires_choice=True)
+            return
 
     def menu_button(self, parent, text, command):
         return tk.Button(
@@ -4867,7 +5221,9 @@ class UnchessApp:
             f"{self.ui_label('wins')}: {stats['wins']}  "
             f"{self.ui_label('losses')}: {stats['losses']}  "
             f"{self.ui_label('draws')}: {stats['draws']}  "
-            f"{self.ui_label('points')}: {stats['points']}"
+            f"{self.ui_label('points')}: {stats['points']}\n"
+            f"{self.ui_label('matches')}: {stats['matches']}  "
+            f"{self.ui_label('average_match_time')}: {self.format_duration_display(stats['average_duration_sec'])}"
         )
 
     def format_external_stats_text(self, stats, bucket):
@@ -4876,7 +5232,9 @@ class UnchessApp:
             f"{self.ui_label('wins')}: {safe_stats['wins']}  "
             f"{self.ui_label('losses')}: {safe_stats['losses']}  "
             f"{self.ui_label('draws')}: {safe_stats['draws']}  "
-            f"{self.ui_label('points')}: {safe_stats['points']}"
+            f"{self.ui_label('points')}: {safe_stats['points']}\n"
+            f"{self.ui_label('matches')}: {safe_stats['matches']}  "
+            f"{self.ui_label('average_match_time')}: {self.format_duration_display(safe_stats['average_duration_sec'])}"
         )
 
     def open_profile_panel(self):
@@ -5411,6 +5769,7 @@ class UnchessApp:
                 "room_code": room["room_code"],
                 "move_limit": room.get("move_limit", self.default_move_limit),
                 "initial_state": game_state,
+                "room": room,
                 "host_username": room.get("host_username"),
                 "guest_username": room.get("guest_username"),
                 "ban_target_slot": "host",
@@ -5477,6 +5836,14 @@ class UnchessApp:
                 "move_limit": "Lépéslimit",
                 "move_limit_hint": "Adj meg számot. A -1 végtelen partit jelent.",
                 "launch_error": "A lépéslimit csak egész szám lehet.",
+                "queen": "Vezér",
+                "rook": "Bástya",
+                "bishop": "Futó",
+                "knight": "Huszár",
+                "promotion_title": "Gyalog átalakulás",
+                "promotion_choose_prompt": "Válassz új bábut a gyalog helyére.",
+                "promotion_opponent_choosing": "Az ellenfél átváltozást választ...",
+                "promotion_choice_sent": "Átváltozás elküldve a szervernek...",
                 "white_bot": "Fehér bot",
                 "black_bot": "Fekete bot",
                 "bot_select_subtitle": "Válassz nehézséget a következő botnak.",
@@ -5604,6 +5971,11 @@ class UnchessApp:
                 "milestones_coming": "A mérföldkövek később ide kerülnek.",
                 "now_moving": "Most mozog",
                 "points": "Pontok",
+                "matches": "Meccsek",
+                "average_match_time": "Atlag meccsido",
+                "elapsed_match_time": "Eltelt ido",
+                "host_avg_match_time": "Host atlag meccsido",
+                "host_avg_match_time_filter": "Host atlag meccsido szuro",
                 "moves": "Lépések",
                 "rule_text": "Szabály: a mozgási rend sakk szerint normális, de mindig a másik játékos kattint a soron következő szín bábujaira. A pont a leütő bábu tulajdonosáé.",
                 "you": "Te",
@@ -5703,6 +6075,10 @@ class UnchessApp:
                 "msg_must_spectate_room_first": "Elobb spectatelned kell a szobat.",
                 "msg_invalid_target": "Ervenytelen celpont.",
                 "msg_no_opponent_to_modify": "Nincs modosit-hato ellenfel.",
+                "msg_promotion_pending_already": "Meg folyamatban van egy atvaltozas valasztasa.",
+                "msg_no_pending_promotion": "Nincs fuggoben levo atvaltozas.",
+                "msg_only_active_player_can_promote": "Csak az aktiv jatekos valaszthat atvaltozast.",
+                "msg_invalid_promotion_choice": "Ervenytelen atvaltozas valasztas.",
                 "msg_server_ready": "Unchess szerver keszen all.",
                 "msg_invalid_json": "Ervenytelen JSON.",
                 "msg_account_banned_with_reason": "A fiok tiltva van. Ok: {reason}",
@@ -5745,6 +6121,14 @@ class UnchessApp:
                 "move_limit": "Move limit",
                 "move_limit_hint": "Enter a number. -1 means an infinite match.",
                 "launch_error": "Move limit must be an integer.",
+                "queen": "Queen",
+                "rook": "Rook",
+                "bishop": "Bishop",
+                "knight": "Knight",
+                "promotion_title": "Pawn promotion",
+                "promotion_choose_prompt": "Choose the new piece for your pawn.",
+                "promotion_opponent_choosing": "Your opponent is choosing a promotion...",
+                "promotion_choice_sent": "Promotion choice sent to the server...",
                 "white_bot": "White bot",
                 "black_bot": "Black bot",
                 "bot_select_subtitle": "Choose a difficulty for the next bot.",
@@ -5872,6 +6256,11 @@ class UnchessApp:
                 "milestones_coming": "Milestones will appear here later.",
                 "now_moving": "Now moving",
                 "points": "Points",
+                "matches": "Matches",
+                "average_match_time": "Average match time",
+                "elapsed_match_time": "Elapsed time",
+                "host_avg_match_time": "Host average match time",
+                "host_avg_match_time_filter": "Host average match time filter",
                 "moves": "Moves",
                 "rule_text": "Rule: movement order is normal chess order, but the other player always clicks the side-to-move pieces. Points belong to the owner of the captured piece.",
                 "you": "You",
@@ -5971,6 +6360,10 @@ class UnchessApp:
                 "msg_must_spectate_room_first": "You must spectate the room first.",
                 "msg_invalid_target": "Invalid target.",
                 "msg_no_opponent_to_modify": "There is no opponent to modify.",
+                "msg_promotion_pending_already": "A promotion choice is still pending.",
+                "msg_no_pending_promotion": "There is no pending promotion choice.",
+                "msg_only_active_player_can_promote": "Only the active player can choose the promotion piece.",
+                "msg_invalid_promotion_choice": "Invalid promotion choice.",
                 "msg_server_ready": "Unchess server ready.",
                 "msg_invalid_json": "Invalid JSON.",
                 "msg_account_banned_with_reason": "This account is banned. Reason: {reason}",
