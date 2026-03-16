@@ -2547,7 +2547,7 @@ class UnchessApp:
         if callable(self.global_return_action):
             self.global_return_action()
 
-    def create_scrollable_view(self, padx=40, pady=36):
+    def create_scrollable_view(self, padx=70, pady=70):
         shell = tk.Frame(self.root, bg=BG_COLOR)
         shell.pack(fill="both", expand=True)
         canvas = tk.Canvas(shell, bg=BG_COLOR, highlightthickness=0, bd=0)
@@ -2595,6 +2595,11 @@ class UnchessApp:
         bbox = canvas.bbox("all")
         if not bbox:
             return
+        view_height = canvas.winfo_height()
+        content_height = bbox[3] - bbox[1]
+        if content_height <= view_height + 1:
+            return
+        top_fraction, bottom_fraction = canvas.yview()
         if event.num == 4:
             delta = -1
         elif event.num == 5:
@@ -2604,6 +2609,10 @@ class UnchessApp:
             if raw_delta == 0:
                 return
             delta = -1 * int(raw_delta / 120 if raw_delta % 120 == 0 else (1 if raw_delta > 0 else -1))
+        if delta < 0 and top_fraction <= 0.0:
+            return
+        if delta > 0 and bottom_fraction >= 1.0:
+            return
         canvas.yview_scroll(delta, "units")
 
     def refresh_current_view_language(self):
@@ -3293,11 +3302,14 @@ class UnchessApp:
         tk.Label(frame, text=self.ui_label("join_room"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
         tk.Label(frame, text=self.ui_label("public_rooms_subtitle"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a", wraplength=640, justify="center").pack(anchor="center", pady=(0, 18))
 
-        controls_row = tk.Frame(frame, bg=BG_COLOR)
-        controls_row.pack(fill="x")
+        content_grid = tk.Frame(frame, bg=BG_COLOR)
+        content_grid.pack(fill="both", expand=True)
+        content_grid.grid_columnconfigure(0, weight=1, uniform="join_layout")
+        content_grid.grid_columnconfigure(1, weight=2, uniform="join_layout")
+        content_grid.grid_rowconfigure(1, weight=1)
 
-        join_card = tk.Frame(controls_row, bg="#efe5d8", padx=18, pady=18)
-        join_card.pack(side="left", fill="both", padx=(0, 8), ipadx=4)
+        join_card = tk.Frame(content_grid, bg="#efe5d8", padx=18, pady=18)
+        join_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 14))
         tk.Label(join_card, text=self.ui_label("enter_room_code"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         self.multiplayer_join_code_var = tk.StringVar()
         def on_code_change(*_args):
@@ -3314,8 +3326,9 @@ class UnchessApp:
         self.set_global_return_action(self.multiplayer_join_room)
         self.menu_button(join_card, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
 
-        filter_card = tk.Frame(controls_row, bg="#efe5d8", padx=18, pady=18)
-        filter_card.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        filter_card = tk.Frame(content_grid, bg="#efe5d8", padx=18, pady=18)
+        filter_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 14))
+        filter_card.grid_columnconfigure(0, weight=1)
         tk.Label(filter_card, text=self.ui_label("move_limit_filter"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         if self.multiplayer_browser_min_var is None:
             self.multiplayer_browser_min_var = tk.IntVar(value=-1)
@@ -3325,17 +3338,19 @@ class UnchessApp:
         tk.Label(filter_card, textvariable=self.multiplayer_browser_filter_summary_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg="#5a5a5a").pack(anchor="center", pady=(6, 8))
         labels_row = tk.Frame(filter_card, bg="#efe5d8")
         labels_row.pack(fill="x")
-        tk.Label(labels_row, text=self.ui_label("minimum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").pack(side="left")
-        tk.Label(labels_row, text=self.ui_label("maximum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").pack(side="right")
-        slider_canvas = tk.Canvas(filter_card, width=460, height=82, bg="#efe5d8", highlightthickness=0, bd=0)
+        labels_row.grid_columnconfigure(0, weight=1)
+        labels_row.grid_columnconfigure(1, weight=1)
+        tk.Label(labels_row, text=self.ui_label("minimum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").grid(row=0, column=0, sticky="ew")
+        tk.Label(labels_row, text=self.ui_label("maximum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").grid(row=0, column=1, sticky="ew")
+        slider_canvas = tk.Canvas(filter_card, height=82, bg="#efe5d8", highlightthickness=0, bd=0)
         slider_canvas.pack(fill="x", pady=(6, 0))
-        slider_left = 28
-        slider_right = 432
+        slider_margin = 28
         slider_y = 48
         slider_max = 120
         handle_radius = 11
         handle_hit_radius = 18
         dragging_handle = {"name": None}
+        slider_width = {"value": 520}
 
         def clamp_browser_values():
             minimum = self.multiplayer_browser_min_var.get()
@@ -3347,12 +3362,16 @@ class UnchessApp:
                     self.multiplayer_browser_min_var.set(maximum)
 
         def value_to_x(value):
+            slider_left = slider_margin
+            slider_right = max(slider_left + 40, slider_width["value"] - slider_margin)
             if value < 0:
                 return slider_left
             ratio = value / slider_max
             return slider_left + ratio * (slider_right - slider_left)
 
         def x_to_value(x_pos):
+            slider_left = slider_margin
+            slider_right = max(slider_left + 40, slider_width["value"] - slider_margin)
             if x_pos <= slider_left + 6:
                 return -1
             ratio = (x_pos - slider_left) / (slider_right - slider_left)
@@ -3373,6 +3392,9 @@ class UnchessApp:
             slider_canvas.delete("all")
             minimum = self.multiplayer_browser_min_var.get()
             maximum = self.multiplayer_browser_max_var.get()
+            slider_left = slider_margin
+            slider_right = max(slider_left + 40, slider_width["value"] - slider_margin)
+            center_x = (slider_left + slider_right) / 2
             min_x = value_to_x(minimum)
             max_x = value_to_x(maximum)
             slider_canvas.create_text(slider_left, slider_y + 22, text="-1", fill="#6a6a6a", font=("Segoe UI", 9, "bold"))
@@ -3382,7 +3404,7 @@ class UnchessApp:
             slider_canvas.create_line(slider_left, slider_y - 10, slider_left, slider_y + 10, fill="#8f7e69", width=2)
             slider_canvas.create_line(slider_right, slider_y - 10, slider_right, slider_y + 10, fill="#8f7e69", width=2)
             if minimum < 0 or maximum < 0:
-                slider_canvas.create_text((slider_left + slider_right) / 2, 16, text=self.ui_label("unlimited"), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
+                slider_canvas.create_text(center_x, 16, text=self.ui_label("unlimited"), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
             else:
                 slider_canvas.create_text(min_x, 16, text=self.format_move_limit_display(minimum), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
                 slider_canvas.create_text(max_x, 16, text=self.format_move_limit_display(maximum), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
@@ -3422,13 +3444,20 @@ class UnchessApp:
             redraw_browser_slider()
             self.request_public_rooms_snapshot()
 
+        def on_slider_configure(event):
+            new_width = max(320, int(event.width))
+            if new_width != slider_width["value"]:
+                slider_width["value"] = new_width
+                redraw_browser_slider()
+
         slider_canvas.bind("<Button-1>", on_slider_press)
         slider_canvas.bind("<B1-Motion>", on_slider_drag)
         slider_canvas.bind("<ButtonRelease-1>", on_slider_release)
+        slider_canvas.bind("<Configure>", on_slider_configure)
         redraw_browser_slider()
 
-        list_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18, height=220)
-        list_card.pack(anchor="center", fill="both", expand=True, pady=(14, 0))
+        list_card = tk.Frame(content_grid, bg="#efe5d8", padx=18, pady=18, height=220)
+        list_card.grid(row=1, column=0, columnspan=2, sticky="nsew")
         list_card.pack_propagate(False)
         tk.Label(list_card, text=self.ui_label("browse_public_rooms"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w", pady=(0, 8))
         self.public_rooms_list_container = list_card
