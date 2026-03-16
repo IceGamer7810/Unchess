@@ -1689,7 +1689,7 @@ class UnchessGame:
             target_slot = self.mode_config.get("ban_target_slot", "host")
             target_name = host_name if target_slot == "host" else guest_name
             self.info_var.set(
-                f"{self.info_var.get()}\n{self.app.ui_label('room')}: {room_code}\nHost: {host_name}\nGuest: {guest_name}\n{self.app.ui_label('spectate_target')}: {target_name}"
+                f"{self.info_var.get()}\n{self.app.ui_label('room')}: {room_code}\n{self.app.ui_label('host')}: {host_name}\n{self.app.ui_label('guest')}: {guest_name}\n{self.app.ui_label('spectate_target')}: {target_name}"
             )
 
     def current_actor(self):
@@ -5595,6 +5595,7 @@ class UnchessApp:
                 "confirm_ban": "Biztosan tiltani szeretnéd az ellenfelet?",
                 "match_options_subtitle": "Állítsd be a parti lépéslimitjét.",
                 "player": "Játékos",
+                "host": "Host",
                 "wins": "Győzelem",
                 "losses": "Vereség",
                 "draws": "Döntetlen",
@@ -5862,6 +5863,7 @@ class UnchessApp:
                 "confirm_ban": "Are you sure you want to ban your opponent?",
                 "match_options_subtitle": "Set the match move limit.",
                 "player": "Player",
+                "host": "Host",
                 "wins": "Wins",
                 "losses": "Losses",
                 "draws": "Draws",
