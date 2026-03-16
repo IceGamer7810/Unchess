@@ -2447,7 +2447,15 @@ class UnchessApp:
         self.multiplayer_join_code_var = None
         self.multiplayer_host_controls = None
         self.multiplayer_move_limit_var = None
+        self.multiplayer_create_move_limit_var = None
+        self.multiplayer_create_move_limit_label_var = None
+        self.multiplayer_create_public_var = None
+        self.multiplayer_browser_min_var = None
+        self.multiplayer_browser_max_var = None
+        self.multiplayer_browser_filter_summary_var = None
         self.multiplayer_is_host = False
+        self.public_rooms_cache = []
+        self.public_rooms_list_container = None
         self.admin_rooms_cache = []
         self.pending_multiplayer_action = None
         self.auth_username_var = None
@@ -3232,17 +3240,159 @@ class UnchessApp:
         self.set_global_return_action(self.multiplayer_create_room)
         if self.is_admin:
             self.menu_button(menu_card, self.ui_label("active_rooms"), self.show_admin_rooms_menu).pack(fill="x", pady=6)
-        tk.Label(
-            frame,
-            text=f"{self.ui_label('host_auto_role')}: {self.role_policy_label(self.auto_role_policy)}",
-            font=("Segoe UI", 10),
-            bg=BG_COLOR,
-            fg="#6a6a6a",
-        ).pack(anchor="center", pady=(18, 0))
 
         if self.has_confirmed_account():
             tk.Button(frame, text=self.ui_label("logout"), command=self.submit_logout, padx=12).pack(pady=(18, 0))
         tk.Button(frame, text=self.ui_label("back"), command=self.show_main_menu, padx=12).pack(pady=(18, 0))
+
+    def format_move_limit_display(self, move_limit):
+        return self.ui_label("unlimited") if int(move_limit) < 0 else str(int(move_limit))
+
+    def browser_filter_summary(self):
+        minimum = self.multiplayer_browser_min_var.get() if self.multiplayer_browser_min_var is not None else -1
+        maximum = self.multiplayer_browser_max_var.get() if self.multiplayer_browser_max_var is not None else -1
+        if minimum < 0 or maximum < 0:
+            return self.ui_label("browser_unlimited_filter")
+        if minimum > maximum:
+            minimum, maximum = maximum, minimum
+        return f"{minimum} - {maximum}"
+
+    def request_public_rooms_snapshot(self):
+        try:
+            self.ensure_multiplayer_connection()
+        except OSError as exc:
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
+            return
+        minimum = self.multiplayer_browser_min_var.get() if self.multiplayer_browser_min_var is not None else -1
+        maximum = self.multiplayer_browser_max_var.get() if self.multiplayer_browser_max_var is not None else -1
+        if minimum < 0 or maximum < 0:
+            minimum = maximum = -1
+        elif minimum > maximum:
+            minimum, maximum = maximum, minimum
+        self.multiplayer_client.send(
+            {
+                "type": "list_public_rooms",
+                "min_move_limit": minimum,
+                "max_move_limit": maximum,
+            }
+        )
+
+    def show_public_room_browser(self, fetch=True):
+        self.current_screen_refresh = lambda: self.show_multiplayer_join_menu(fetch=False)
+        self.show_multiplayer_join_menu(fetch=fetch)
+
+    def show_multiplayer_join_menu(self, fetch=True):
+        self.current_screen_refresh = lambda: self.show_multiplayer_join_menu(fetch=False)
+        self.clear_view()
+        frame = self.create_scrollable_view()
+
+        top_bar = tk.Frame(frame, bg=BG_COLOR)
+        top_bar.pack(fill="x")
+        self.mount_settings_button(top_bar)
+
+        tk.Label(frame, text=self.ui_label("join_room"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
+        tk.Label(frame, text=self.ui_label("public_rooms_subtitle"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a", wraplength=640, justify="center").pack(anchor="center", pady=(0, 18))
+
+        join_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18)
+        join_card.pack(anchor="center", fill="x")
+        tk.Label(join_card, text=self.ui_label("enter_room_code"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        self.multiplayer_join_code_var = tk.StringVar()
+        def on_code_change(*_args):
+            if self.multiplayer_join_code_var is None:
+                return
+            current = self.multiplayer_join_code_var.get()
+            upper = current.upper()
+            if current != upper:
+                self.multiplayer_join_code_var.set(upper)
+        self.multiplayer_join_code_var.trace_add("write", on_code_change)
+        entry = tk.Entry(join_card, textvariable=self.multiplayer_join_code_var, font=("Consolas", 20), justify="center", width=10)
+        entry.pack(pady=(8, 12))
+        entry.focus_set()
+        self.set_global_return_action(self.multiplayer_join_room)
+        self.menu_button(join_card, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
+
+        filter_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18)
+        filter_card.pack(anchor="center", fill="x", pady=(14, 0))
+        tk.Label(filter_card, text=self.ui_label("move_limit_filter"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+        if self.multiplayer_browser_min_var is None:
+            self.multiplayer_browser_min_var = tk.IntVar(value=-1)
+        if self.multiplayer_browser_max_var is None:
+            self.multiplayer_browser_max_var = tk.IntVar(value=40)
+        self.multiplayer_browser_filter_summary_var = tk.StringVar(value=self.browser_filter_summary())
+        tk.Label(filter_card, textvariable=self.multiplayer_browser_filter_summary_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg="#5a5a5a").pack(anchor="center", pady=(6, 8))
+        values_row = tk.Frame(filter_card, bg="#efe5d8")
+        values_row.pack(fill="x")
+        min_value_var = tk.StringVar()
+        max_value_var = tk.StringVar()
+        tk.Label(values_row, textvariable=min_value_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(side="left")
+        tk.Label(values_row, textvariable=max_value_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(side="right")
+        slider_row = tk.Frame(filter_card, bg="#efe5d8")
+        slider_row.pack(fill="x")
+
+        def refresh_filter_value_labels():
+            minimum = self.multiplayer_browser_min_var.get()
+            maximum = self.multiplayer_browser_max_var.get()
+            if minimum < 0 or maximum < 0:
+                label = self.ui_label("unlimited")
+                min_value_var.set(label)
+                max_value_var.set(label)
+            else:
+                min_value_var.set(self.format_move_limit_display(minimum))
+                max_value_var.set(self.format_move_limit_display(maximum))
+
+        def on_filter_change(_value=None):
+            if self.multiplayer_browser_filter_summary_var is not None:
+                self.multiplayer_browser_filter_summary_var.set(self.browser_filter_summary())
+            refresh_filter_value_labels()
+
+        min_scale = tk.Scale(slider_row, from_=-1, to=80, orient="horizontal", variable=self.multiplayer_browser_min_var, resolution=1, showvalue=False, command=on_filter_change, length=220, bg="#efe5d8", highlightthickness=0)
+        min_scale.pack(side="left", padx=(0, 8))
+        max_scale = tk.Scale(slider_row, from_=-1, to=80, orient="horizontal", variable=self.multiplayer_browser_max_var, resolution=1, showvalue=False, command=on_filter_change, length=220, bg="#efe5d8", highlightthickness=0)
+        max_scale.pack(side="left", padx=(8, 0))
+        min_scale.bind("<ButtonRelease-1>", lambda _event: self.request_public_rooms_snapshot())
+        max_scale.bind("<ButtonRelease-1>", lambda _event: self.request_public_rooms_snapshot())
+        min_scale.bind("<KeyRelease>", lambda _event: self.request_public_rooms_snapshot())
+        max_scale.bind("<KeyRelease>", lambda _event: self.request_public_rooms_snapshot())
+        refresh_filter_value_labels()
+
+        labels_row = tk.Frame(filter_card, bg="#efe5d8")
+        labels_row.pack(fill="x")
+        tk.Label(labels_row, text=self.ui_label("minimum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").pack(side="left")
+        tk.Label(labels_row, text=self.ui_label("maximum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").pack(side="right")
+
+        list_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18)
+        list_card.pack(anchor="center", fill="both", expand=True, pady=(14, 0))
+        tk.Label(list_card, text=self.ui_label("browse_public_rooms"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w", pady=(0, 8))
+        self.public_rooms_list_container = list_card
+        self.render_public_room_rows()
+
+        action_row = tk.Frame(frame, bg=BG_COLOR)
+        action_row.pack(anchor="center", pady=(18, 0))
+        tk.Button(action_row, text=self.ui_label("refresh"), command=lambda: self.show_multiplayer_join_menu(fetch=True), padx=12).pack(side="left", padx=4)
+        tk.Button(action_row, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(side="left", padx=4)
+        if fetch:
+            self.request_public_rooms_snapshot()
+
+    def render_public_room_rows(self):
+        container = getattr(self, "public_rooms_list_container", None)
+        if container is None:
+            return
+        for child in container.winfo_children():
+            child.destroy()
+        tk.Label(container, text=self.ui_label("browse_public_rooms"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w", pady=(0, 8))
+        rooms = self.public_rooms_cache
+        if not rooms:
+            tk.Label(container, text=self.ui_label("no_public_rooms"), font=("Segoe UI", 11), bg="#efe5d8", fg="#5a5a5a").pack(anchor="center", pady=12)
+            return
+        for room in rooms:
+            row = tk.Frame(container, bg="#efe5d8", pady=6)
+            row.pack(fill="x")
+            host = room.get("host_username") or "?"
+            code = room.get("room_code", "??????")
+            move_limit = self.format_move_limit_display(room.get("move_limit", -1))
+            text = f"{code} | {self.ui_label('host')}: {host} | {self.ui_label('move_limit')}: {move_limit}"
+            tk.Label(row, text=text, font=("Consolas", 11), bg="#efe5d8", fg=TEXT_COLOR, anchor="w", justify="left").pack(side="left", fill="x", expand=True)
+            tk.Button(row, text=self.ui_label("join"), command=lambda c=code: self.multiplayer_join_room(c), padx=10).pack(side="right")
 
     def show_console_placeholder(self):
         self.current_screen_refresh = self.show_console_placeholder
@@ -3553,10 +3703,14 @@ class UnchessApp:
     def multiplayer_create_room(self):
         if self.pending_multiplayer_action and self.pending_multiplayer_action.get("kind") == "create":
             return
+        move_limit = int(self.default_move_limit)
+        if move_limit < 0:
+            move_limit = -1
+        is_public = True
         try:
             self.ensure_multiplayer_connection()
-            self.pending_multiplayer_action = {"kind": "create"}
-            self.multiplayer_client.send({"type": "create_room"})
+            self.pending_multiplayer_action = {"kind": "create", "is_public": is_public, "move_limit": move_limit}
+            self.multiplayer_client.send({"type": "create_room", "is_public": is_public, "move_limit": move_limit})
         except OSError as exc:
             messagebox.showerror("Multiplayer", f"Nem sikerult csatlakozni a szerverhez: {exc}")
 
@@ -3594,10 +3748,13 @@ class UnchessApp:
         self.menu_button(frame, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
         tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(pady=(18, 0))
 
-    def multiplayer_join_room(self):
+    def multiplayer_join_room(self, room_code=None):
         if self.pending_multiplayer_action and self.pending_multiplayer_action.get("kind") == "join":
             return
-        code = (self.multiplayer_join_code_var.get() if self.multiplayer_join_code_var is not None else "").strip().upper()
+        if room_code is None:
+            code = (self.multiplayer_join_code_var.get() if self.multiplayer_join_code_var is not None else "").strip().upper()
+        else:
+            code = str(room_code).strip().upper()
         if not code:
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("enter_room_code_error"))
             return
@@ -3853,7 +4010,9 @@ class UnchessApp:
                 status = self.ui_label("started") if room.get("started") else self.ui_label("waiting")
                 host = room.get("host_username") or "?"
                 guest = room.get("guest_username") or "?"
-                text = f"{room.get('room_code', '??????')} | {status} | {host} vs {guest} | {self.ui_label('moves')}: {room.get('move_count', 0)}"
+                visibility = self.ui_label("public_room") if room.get("is_public") else self.ui_label("private_room")
+                move_limit = self.format_move_limit_display(room.get("move_limit", -1))
+                text = f"{room.get('room_code', '??????')} | {visibility} | {status} | {host} vs {guest} | {self.ui_label('move_limit')}: {move_limit} | {self.ui_label('moves')}: {room.get('move_count', 0)}"
                 tk.Label(row, text=text, font=("Consolas", 11), bg="#efe5d8", fg=TEXT_COLOR, anchor="w", justify="left").pack(side="left", fill="x", expand=True)
                 if room.get("started"):
                     tk.Button(row, text=self.ui_label("spectate"), command=lambda c=room.get("room_code"): self.start_spectating_room(c), padx=10).pack(side="right")
@@ -3887,6 +4046,9 @@ class UnchessApp:
 
         self.multiplayer_room_var = tk.StringVar(value=code)
         self.multiplayer_status_var = tk.StringVar(value=self.ui_label("waiting_opponent"))
+        room_payload = self.multiplayer_room or {}
+        move_limit_text = self.format_move_limit_display(room_payload.get("move_limit", self.default_move_limit))
+        guest_ready = bool(room_payload.get("guest_connected"))
 
         tk.Label(frame, text=self.ui_label("multiplayer_lobby"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
         tk.Label(frame, text=self.ui_label("room_code"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a").pack(anchor="center")
@@ -3895,17 +4057,67 @@ class UnchessApp:
 
         self.multiplayer_host_controls = tk.Frame(frame, bg=BG_COLOR)
         self.multiplayer_host_controls.pack(anchor="center")
+        if host:
+            host_card = tk.Frame(self.multiplayer_host_controls, bg="#efe5d8", padx=22, pady=22)
+            host_card.pack(anchor="center")
+            tk.Label(host_card, text=self.ui_label("room_settings"), font=("Segoe UI", 12, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
+            tk.Label(host_card, text=self.ui_label("room_settings_subtitle"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a", wraplength=420, justify="left").pack(anchor="w", pady=(2, 12))
+            self.multiplayer_create_public_var = tk.BooleanVar(value=bool(room_payload.get("is_public", True)))
+            self.multiplayer_create_move_limit_var = tk.IntVar(value=int(room_payload.get("move_limit", self.default_move_limit)))
+            self.multiplayer_create_move_limit_label_var = tk.StringVar(
+                value=f"{self.ui_label('move_limit')}: {self.format_move_limit_display(self.multiplayer_create_move_limit_var.get())}"
+            )
+            visibility_button = tk.Button(host_card, text=self.ui_label("make_room_private") if self.multiplayer_create_public_var.get() else self.ui_label("make_room_public"), command=self.toggle_waiting_room_visibility, padx=12, pady=8)
+            visibility_button.pack(fill="x", pady=(0, 10))
+            self.multiplayer_visibility_button = visibility_button
+            tk.Label(host_card, textvariable=self.multiplayer_create_move_limit_label_var, font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="center")
+            move_scale = tk.Scale(
+                host_card,
+                from_=-1,
+                to=80,
+                orient="horizontal",
+                variable=self.multiplayer_create_move_limit_var,
+                resolution=1,
+                showvalue=False,
+                length=320,
+                bg="#efe5d8",
+                highlightthickness=0,
+                command=self.on_waiting_room_move_limit_change,
+            )
+            move_scale.pack(pady=(6, 12))
+            move_scale.bind("<ButtonRelease-1>", lambda _event: self.submit_waiting_room_settings())
+            move_scale.bind("<KeyRelease>", lambda _event: self.submit_waiting_room_settings())
+            start_button = tk.Button(
+                host_card,
+                text=self.ui_label("start_match"),
+                command=self.show_multiplayer_role_choice,
+                padx=12,
+                pady=8,
+                state="normal" if guest_ready else "disabled",
+                disabledforeground="#8c8c8c",
+            )
+            start_button.pack(fill="x")
+        else:
+            tk.Label(
+                self.multiplayer_host_controls,
+                text=f"{self.ui_label('move_limit')}: {move_limit_text}",
+                font=("Segoe UI", 10, "bold"),
+                bg=BG_COLOR,
+                fg="#6a6a6a",
+            ).pack(anchor="center")
 
         tk.Button(frame, text=self.ui_label("cancel"), command=self.cancel_multiplayer, padx=12).pack(pady=(18, 0))
 
     def show_multiplayer_role_choice(self):
+        room = self.multiplayer_room or {}
+        if not self.multiplayer_is_host or not room.get("guest_connected"):
+            return
         if self.multiplayer_host_controls is None:
             return
         code = self.multiplayer_room_var.get() if self.multiplayer_room_var is not None else "......"
         self.current_screen_refresh = lambda h=self.multiplayer_is_host, c=code: (self.show_multiplayer_waiting_room(h, c), self.show_multiplayer_role_choice())
         for child in self.multiplayer_host_controls.winfo_children():
             child.destroy()
-        self.multiplayer_move_limit_var = tk.StringVar(value=str(self.default_move_limit))
         tk.Label(
             self.multiplayer_host_controls,
             text=self.ui_label("role_setup"),
@@ -3913,20 +4125,6 @@ class UnchessApp:
             bg=BG_COLOR,
             fg=TEXT_COLOR,
         ).pack(pady=(0, 8))
-        tk.Label(
-            self.multiplayer_host_controls,
-            text=self.ui_label("move_limit_short"),
-            font=("Segoe UI", 10),
-            bg=BG_COLOR,
-            fg="#6a6a6a",
-        ).pack()
-        tk.Entry(
-            self.multiplayer_host_controls,
-            textvariable=self.multiplayer_move_limit_var,
-            font=("Consolas", 16),
-            justify="center",
-            width=8,
-        ).pack(pady=(4, 10))
         row = tk.Frame(self.multiplayer_host_controls, bg=BG_COLOR)
         row.pack()
         tk.Button(row, text=self.ui_label("white"), command=lambda: self.send_role_choice("white"), padx=12).pack(side="left", padx=4)
@@ -3935,13 +4133,41 @@ class UnchessApp:
 
     def send_role_choice(self, choice):
         if self.multiplayer_client is not None:
-            try:
-                move_limit = int((self.multiplayer_move_limit_var.get() if self.multiplayer_move_limit_var is not None else str(self.default_move_limit)).strip())
-            except ValueError:
-                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("launch_error"))
-                return
             self.multiplayer_status_var.set(self.ui_label("role_sent"))
-            self.multiplayer_client.send({"type": "choose_role", "preference": choice, "move_limit": move_limit})
+            self.multiplayer_client.send({"type": "choose_role", "preference": choice})
+
+    def toggle_waiting_room_visibility(self):
+        if self.multiplayer_create_public_var is None:
+            return
+        self.multiplayer_create_public_var.set(not self.multiplayer_create_public_var.get())
+        self.submit_waiting_room_settings()
+
+    def submit_waiting_room_settings(self):
+        if not self.multiplayer_is_host or self.multiplayer_client is None or self.multiplayer_room is None:
+            return
+        try:
+            move_limit = int(self.multiplayer_create_move_limit_var.get() if self.multiplayer_create_move_limit_var is not None else self.default_move_limit)
+        except (ValueError, tk.TclError):
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("launch_error"))
+            return
+        if move_limit < 0:
+            move_limit = -1
+        is_public = bool(self.multiplayer_create_public_var.get()) if self.multiplayer_create_public_var is not None else True
+        self.multiplayer_client.send(
+            {
+                "type": "update_room_settings",
+                "room_code": self.multiplayer_room.get("room_code", ""),
+                "is_public": is_public,
+                "move_limit": move_limit,
+            }
+        )
+
+    def on_waiting_room_move_limit_change(self, _value=None):
+        if self.multiplayer_create_move_limit_var is None or self.multiplayer_create_move_limit_label_var is None:
+            return
+        self.multiplayer_create_move_limit_label_var.set(
+            f"{self.ui_label('move_limit')}: {self.format_move_limit_display(self.multiplayer_create_move_limit_var.get())}"
+        )
 
     def cancel_multiplayer(self):
         if self.multiplayer_client is not None and self.multiplayer_client.connected:
@@ -4202,6 +4428,13 @@ class UnchessApp:
                 if refresh_name in {"<lambda>", "show_admin_rooms_menu"}:
                     self.show_admin_rooms_menu(fetch=False)
             return
+        if event_type == "public_rooms_snapshot":
+            self.public_rooms_cache = event.get("rooms", [])
+            if self.public_rooms_list_container is not None and self.public_rooms_list_container.winfo_exists():
+                if self.multiplayer_browser_filter_summary_var is not None:
+                    self.multiplayer_browser_filter_summary_var.set(self.browser_filter_summary())
+                self.render_public_room_rows()
+            return
         if event_type == "spectate_started":
             room = event.get("room", {})
             game_state = event.get("game_state") or {}
@@ -4250,8 +4483,19 @@ class UnchessApp:
                 self.multiplayer_room_var.set(event["room"]["room_code"])
             if self.multiplayer_status_var is not None:
                 self.multiplayer_status_var.set(self.ui_label("opponent_arrived"))
-            if self.multiplayer_is_host:
-                self.show_multiplayer_role_choice()
+            if callable(self.current_screen_refresh):
+                refresh_name = getattr(self.current_screen_refresh, "__name__", "")
+                if refresh_name == "<lambda>":
+                    self.show_multiplayer_waiting_room(self.multiplayer_is_host, event["room"]["room_code"])
+            return
+        if event_type == "room_updated":
+            self.multiplayer_room = event["room"]
+            if self.multiplayer_room_var is not None:
+                self.multiplayer_room_var.set(event["room"]["room_code"])
+            if callable(self.current_screen_refresh):
+                refresh_name = getattr(self.current_screen_refresh, "__name__", "")
+                if refresh_name == "<lambda>":
+                    self.show_multiplayer_waiting_room(self.multiplayer_is_host, event["room"]["room_code"])
             return
         if event_type == "game_start":
             room = event["room"]
@@ -5080,6 +5324,23 @@ class UnchessApp:
                 "console_profile_hint": "Ez egy operátori session. Itt szerveroldali account- és moderációs műveletek vannak, nem meccsfigyelés.",
                 "guest_profile_hint": "Vendég módban játszol. A pontok és statok csak bejelentkezett fiókhoz menthetők.",
                 "create_room": "Új játék létrehozása",
+                "create_room_subtitle": "Állítsd be előre, hogy a szoba nyilvános vagy privát legyen, és add meg a lépéslimitet is.",
+                "browse_public_rooms": "Nyilvános szobák",
+                "public_rooms_subtitle": "Itt láthatod az éppen elérhető nyilvános szobákat. A privát szobákhoz továbbra is kód kell.",
+                "no_public_rooms": "Jelenleg nincs elérhető nyilvános szoba.",
+                "room_visibility": "Szoba láthatósága",
+                "room_settings": "Szoba beállításai",
+                "room_settings_subtitle": "Ezeket csak a host módosíthatja. A Start csak akkor aktív, ha már bent van az ellenfél.",
+                "public_room": "Nyilvános",
+                "private_room": "Privát",
+                "make_room_private": "Szoba priváttá tétele",
+                "make_room_public": "Szoba publikussá tétele",
+                "move_limit_filter": "Lépéslimit szűrő",
+                "browser_unlimited_filter": "Végtelen",
+                "unlimited": "Végtelen",
+                "minimum": "Minimum",
+                "maximum": "Maximum",
+                "start_match": "Start",
                 "join_room": "Csatlakozás meglévőhöz",
                 "logout": "Kijelentkezés",
                 "delete_account": "Fiók törlése",
@@ -5245,6 +5506,23 @@ class UnchessApp:
                 "console_profile_hint": "This is an operator session for server-side account and moderation actions, not for match supervision.",
                 "guest_profile_hint": "You are playing as a guest. Points and long-term stats are only saved for signed-in accounts.",
                 "create_room": "Create new game",
+                "create_room_subtitle": "Set the room visibility and move limit up front before you create it.",
+                "browse_public_rooms": "Browse public rooms",
+                "public_rooms_subtitle": "Browse currently available public rooms here. Private rooms still require a room code.",
+                "no_public_rooms": "There are no available public rooms right now.",
+                "room_visibility": "Room visibility",
+                "room_settings": "Room settings",
+                "room_settings_subtitle": "Only the host can change these. Start becomes available once the opponent joins.",
+                "public_room": "Public",
+                "private_room": "Private",
+                "make_room_private": "Make room private",
+                "make_room_public": "Make room public",
+                "move_limit_filter": "Move-limit filter",
+                "browser_unlimited_filter": "Unlimited",
+                "unlimited": "Unlimited",
+                "minimum": "Minimum",
+                "maximum": "Maximum",
+                "start_match": "Start",
                 "join_room": "Join existing room",
                 "logout": "Logout",
                 "delete_account": "Delete account",
