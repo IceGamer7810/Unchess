@@ -23,6 +23,7 @@ WINDOW_WIDTH = BOARD_PIXELS + SIDEBAR_WIDTH
 WINDOW_HEIGHT = BOARD_PIXELS + 70
 MIN_WINDOW_WIDTH = 640
 MIN_WINDOW_HEIGHT = 420
+DEFAULT_MULTIPLAYER_MOVE_LIMIT = 120
 MIN_BOARD_SQUARE_PIXELS = 12
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 7777
@@ -2454,6 +2455,8 @@ class UnchessApp:
         self.multiplayer_browser_max_var = None
         self.multiplayer_browser_filter_summary_var = None
         self.multiplayer_is_host = False
+        self.multiplayer_waiting_room_active = False
+        self.multiplayer_role_choice_open = False
         self.public_rooms_cache = []
         self.public_rooms_list_container = None
         self.admin_rooms_cache = []
@@ -2527,6 +2530,8 @@ class UnchessApp:
         self.clear_global_return_action()
         self.close_profile_panel(redraw_icon=False)
         self.close_settings_panel(redraw_icon=False)
+        self.multiplayer_waiting_room_active = False
+        self.multiplayer_role_choice_open = False
         if self.current_view is not None:
             self.current_view.destroy()
             self.current_view = None
@@ -2714,7 +2719,14 @@ class UnchessApp:
     def show_multiplayer_entry(self):
         self.auth_target_screen = "multiplayer"
         if self.has_confirmed_account():
-            self.show_post_login_multiplayer_view()
+            if self.multiplayer_client is not None and self.multiplayer_client.connected and self.socket_session_confirmed:
+                self.show_post_login_multiplayer_view()
+            elif self.remember_token:
+                self.show_multiplayer_auth_menu()
+                self.root.after(0, self.restore_saved_login)
+            else:
+                self.session_confirmed = False
+                self.show_multiplayer_auth_menu("login")
         elif self.remember_token:
             self.show_multiplayer_auth_menu()
             self.root.after(0, self.restore_saved_login)
@@ -3367,7 +3379,7 @@ class UnchessApp:
         if self.multiplayer_browser_min_var is None:
             self.multiplayer_browser_min_var = tk.IntVar(value=-1)
         if self.multiplayer_browser_max_var is None:
-            self.multiplayer_browser_max_var = tk.IntVar(value=120)
+            self.multiplayer_browser_max_var = tk.IntVar(value=DEFAULT_MULTIPLAYER_MOVE_LIMIT)
         self.multiplayer_browser_filter_summary_var = tk.StringVar(value=self.browser_filter_summary())
         tk.Label(filter_card, textvariable=self.multiplayer_browser_filter_summary_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg="#5a5a5a").pack(anchor="center", pady=(6, 8))
         labels_row = tk.Frame(filter_card, bg="#efe5d8")
@@ -3380,7 +3392,7 @@ class UnchessApp:
         slider_canvas.pack(fill="x", pady=(6, 0))
         slider_margin = 28
         slider_y = 48
-        slider_max = 120
+        slider_max = DEFAULT_MULTIPLAYER_MOVE_LIMIT
         handle_radius = 11
         handle_hit_radius = 18
         dragging_handle = {"name": None}
@@ -3834,7 +3846,10 @@ class UnchessApp:
     def multiplayer_create_room(self):
         if self.pending_multiplayer_action and self.pending_multiplayer_action.get("kind") == "create":
             return
-        move_limit = int(self.default_move_limit)
+        if self.multiplayer_room is not None:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("already_assigned_to_room"))
+            return
+        move_limit = DEFAULT_MULTIPLAYER_MOVE_LIMIT
         if move_limit < 0:
             move_limit = -1
         is_public = True
@@ -3847,6 +3862,9 @@ class UnchessApp:
 
     def multiplayer_join_room(self, room_code=None):
         if self.pending_multiplayer_action and self.pending_multiplayer_action.get("kind") == "join":
+            return
+        if self.multiplayer_room is not None:
+            messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("already_assigned_to_room"))
             return
         if room_code is None:
             code = (self.multiplayer_join_code_var.get() if self.multiplayer_join_code_var is not None else "").strip().upper()
@@ -4135,6 +4153,7 @@ class UnchessApp:
         self.current_screen_refresh = lambda h=host, c=code: self.show_multiplayer_waiting_room(h, c)
         self.multiplayer_is_host = host
         self.clear_view()
+        self.multiplayer_waiting_room_active = True
         frame = self.create_scrollable_view()
 
         top_bar = tk.Frame(frame, bg=BG_COLOR)
@@ -4144,7 +4163,7 @@ class UnchessApp:
         self.multiplayer_room_var = tk.StringVar(value=code)
         self.multiplayer_status_var = tk.StringVar(value=self.ui_label("waiting_opponent"))
         room_payload = self.multiplayer_room or {}
-        move_limit_text = self.format_move_limit_display(room_payload.get("move_limit", self.default_move_limit))
+        move_limit_text = self.format_move_limit_display(room_payload.get("move_limit", DEFAULT_MULTIPLAYER_MOVE_LIMIT))
         guest_ready = bool(room_payload.get("guest_connected"))
 
         tk.Label(frame, text=self.ui_label("multiplayer_lobby"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
@@ -4160,7 +4179,7 @@ class UnchessApp:
             tk.Label(host_card, text=self.ui_label("room_settings"), font=("Segoe UI", 12, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
             tk.Label(host_card, text=self.ui_label("room_settings_subtitle"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a", wraplength=420, justify="left").pack(anchor="w", pady=(2, 12))
             self.multiplayer_create_public_var = tk.BooleanVar(value=bool(room_payload.get("is_public", True)))
-            self.multiplayer_create_move_limit_var = tk.IntVar(value=int(room_payload.get("move_limit", self.default_move_limit)))
+            self.multiplayer_create_move_limit_var = tk.IntVar(value=int(room_payload.get("move_limit", DEFAULT_MULTIPLAYER_MOVE_LIMIT)))
             self.multiplayer_create_move_limit_label_var = tk.StringVar(
                 value=f"{self.ui_label('move_limit')}: {self.format_move_limit_display(self.multiplayer_create_move_limit_var.get())}"
             )
@@ -4171,7 +4190,7 @@ class UnchessApp:
             move_scale = tk.Scale(
                 host_card,
                 from_=-1,
-                to=120,
+                to=DEFAULT_MULTIPLAYER_MOVE_LIMIT,
                 orient="horizontal",
                 variable=self.multiplayer_create_move_limit_var,
                 resolution=1,
@@ -4211,6 +4230,7 @@ class UnchessApp:
             return
         if self.multiplayer_host_controls is None:
             return
+        self.multiplayer_role_choice_open = True
         code = self.multiplayer_room_var.get() if self.multiplayer_room_var is not None else "......"
         self.current_screen_refresh = lambda h=self.multiplayer_is_host, c=code: (self.show_multiplayer_waiting_room(h, c), self.show_multiplayer_role_choice())
         for child in self.multiplayer_host_controls.winfo_children():
@@ -4248,7 +4268,7 @@ class UnchessApp:
         ):
             return
         try:
-            move_limit = int(self.multiplayer_create_move_limit_var.get() if self.multiplayer_create_move_limit_var is not None else self.default_move_limit)
+            move_limit = int(self.multiplayer_create_move_limit_var.get() if self.multiplayer_create_move_limit_var is not None else DEFAULT_MULTIPLAYER_MOVE_LIMIT)
         except (ValueError, tk.TclError):
             messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("launch_error"))
             return
@@ -4513,6 +4533,8 @@ class UnchessApp:
             self.close_multiplayer_client()
             return
         if event_type == "error":
+            if self.multiplayer_room is not None and event.get("message_key") == "already_assigned_to_room":
+                return
             messagebox.showerror(self.ui_label("multiplayer"), self.resolve_server_message(event, "network_error_generic"))
             if self.pending_multiplayer_action and self.pending_multiplayer_action["kind"] == "join":
                 self.show_multiplayer_join_menu()
@@ -4686,19 +4708,19 @@ class UnchessApp:
                 self.multiplayer_room_var.set(event["room"]["room_code"])
             if self.multiplayer_status_var is not None:
                 self.multiplayer_status_var.set(self.ui_label("opponent_arrived"))
-            if callable(self.current_screen_refresh):
-                refresh_name = getattr(self.current_screen_refresh, "__name__", "")
-                if refresh_name == "<lambda>":
-                    self.show_multiplayer_waiting_room(self.multiplayer_is_host, event["room"]["room_code"])
+            self.show_multiplayer_waiting_room(self.multiplayer_is_host, event["room"]["room_code"])
+            if self.multiplayer_is_host and self.multiplayer_role_choice_open:
+                self.show_multiplayer_role_choice()
             return
         if event_type == "room_updated":
             self.multiplayer_room = event["room"]
             if self.multiplayer_room_var is not None:
                 self.multiplayer_room_var.set(event["room"]["room_code"])
-            if callable(self.current_screen_refresh):
-                refresh_name = getattr(self.current_screen_refresh, "__name__", "")
-                if refresh_name == "<lambda>":
-                    self.show_multiplayer_waiting_room(self.multiplayer_is_host, event["room"]["room_code"])
+            if not event["room"].get("started"):
+                reopen_role_choice = bool(self.multiplayer_is_host and self.multiplayer_role_choice_open and event["room"].get("guest_connected"))
+                self.show_multiplayer_waiting_room(self.multiplayer_is_host, event["room"]["room_code"])
+                if reopen_role_choice:
+                    self.show_multiplayer_role_choice()
             return
         if event_type == "game_start":
             room = event["room"]
