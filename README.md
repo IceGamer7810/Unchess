@@ -17,6 +17,7 @@ The game is about building forced responses: keep escape routes for your own kin
 - local bot mode
 - local bot-vs-bot mode
 - dedicated TCP multiplayer
+- public room browser plus direct room-code join
 - scalable window and board canvas
 - animated moves
 - check visualization
@@ -41,6 +42,11 @@ The game is about building forced responses: keep escape routes for your own kin
   - `player`: normal room creation / joining and reporting
   - `admin`: player UI plus active room list, spectating, and direct bans
   - `console`: server/account management UI after logging in with the console username and master key
+- multiplayer room flow:
+  - `Create room` creates a room immediately with default public visibility
+  - the host can live-toggle `public/private` and adjust the room move limit from the waiting room
+  - `Start` only becomes active once the opponent has joined
+  - `Join room` combines direct room-code entry with a browser for available public rooms
 - console UI:
   - player list
   - live search
@@ -58,7 +64,7 @@ The game is about building forced responses: keep escape routes for your own kin
 - `Bot vs Bot`
 - `Multiplayer`
 
-Multiplayer connects to the dedicated server. Room creation, joining, role selection, and move synchronization are all server-backed.
+Multiplayer connects to the dedicated server. Room creation, joining, room visibility, move-limit changes, role selection, and move synchronization are all server-backed.
 Admins can inspect active matches through a spectator view. Console sessions are separated from match supervision and are reserved for account/server operations.
 On startup the client can prompt for account login, registration, or guest mode. Guest mode still works for local play, but multiplayer requires a server-confirmed account session.
 
@@ -88,7 +94,7 @@ For new installs, the client detects the system language and defaults to:
 - `hu` for Hungarian locales
 - `en` otherwise
 
-Each new match can still override the move limit before start. The settings value is only the default prefilled value.
+For multiplayer, the configured move limit acts as the default when a room is first created. The host can still change it live from the waiting room before the match starts.
 
 ## Config
 

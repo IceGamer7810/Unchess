@@ -475,7 +475,7 @@ class MultiplayerClient:
         self.connected = True
         self.reader = threading.Thread(target=self.read_loop, daemon=True)
         self.reader.start()
-        self.send({"type": "hello", "name": name})
+        self.send({"type": "ping", "name": name})
 
     def read_loop(self):
         try:
@@ -2411,7 +2411,7 @@ class UnchessGame:
         self.status_var.set(message)
         self.draw()
         self.app.report_finished_local_match(self)
-        messagebox.showinfo("Játék vége", message)
+        messagebox.showinfo(self.app.ui_label("game_over_title"), message)
 
 
 class UnchessApp:
@@ -3293,8 +3293,11 @@ class UnchessApp:
         tk.Label(frame, text=self.ui_label("join_room"), font=("Segoe UI", 26, "bold"), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="center", pady=(10, 8))
         tk.Label(frame, text=self.ui_label("public_rooms_subtitle"), font=("Segoe UI", 11), bg=BG_COLOR, fg="#5a5a5a", wraplength=640, justify="center").pack(anchor="center", pady=(0, 18))
 
-        join_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18)
-        join_card.pack(anchor="center", fill="x")
+        controls_row = tk.Frame(frame, bg=BG_COLOR)
+        controls_row.pack(fill="x")
+
+        join_card = tk.Frame(controls_row, bg="#efe5d8", padx=18, pady=18)
+        join_card.pack(side="left", fill="both", padx=(0, 8), ipadx=4)
         tk.Label(join_card, text=self.ui_label("enter_room_code"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         self.multiplayer_join_code_var = tk.StringVar()
         def on_code_change(*_args):
@@ -3311,57 +3314,122 @@ class UnchessApp:
         self.set_global_return_action(self.multiplayer_join_room)
         self.menu_button(join_card, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
 
-        filter_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18)
-        filter_card.pack(anchor="center", fill="x", pady=(14, 0))
+        filter_card = tk.Frame(controls_row, bg="#efe5d8", padx=18, pady=18)
+        filter_card.pack(side="left", fill="x", expand=True, padx=(8, 0))
         tk.Label(filter_card, text=self.ui_label("move_limit_filter"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w")
         if self.multiplayer_browser_min_var is None:
             self.multiplayer_browser_min_var = tk.IntVar(value=-1)
         if self.multiplayer_browser_max_var is None:
-            self.multiplayer_browser_max_var = tk.IntVar(value=40)
+            self.multiplayer_browser_max_var = tk.IntVar(value=120)
         self.multiplayer_browser_filter_summary_var = tk.StringVar(value=self.browser_filter_summary())
         tk.Label(filter_card, textvariable=self.multiplayer_browser_filter_summary_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg="#5a5a5a").pack(anchor="center", pady=(6, 8))
-        values_row = tk.Frame(filter_card, bg="#efe5d8")
-        values_row.pack(fill="x")
-        min_value_var = tk.StringVar()
-        max_value_var = tk.StringVar()
-        tk.Label(values_row, textvariable=min_value_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(side="left")
-        tk.Label(values_row, textvariable=max_value_var, font=("Segoe UI", 10, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(side="right")
-        slider_row = tk.Frame(filter_card, bg="#efe5d8")
-        slider_row.pack(fill="x")
-
-        def refresh_filter_value_labels():
-            minimum = self.multiplayer_browser_min_var.get()
-            maximum = self.multiplayer_browser_max_var.get()
-            if minimum < 0 or maximum < 0:
-                label = self.ui_label("unlimited")
-                min_value_var.set(label)
-                max_value_var.set(label)
-            else:
-                min_value_var.set(self.format_move_limit_display(minimum))
-                max_value_var.set(self.format_move_limit_display(maximum))
-
-        def on_filter_change(_value=None):
-            if self.multiplayer_browser_filter_summary_var is not None:
-                self.multiplayer_browser_filter_summary_var.set(self.browser_filter_summary())
-            refresh_filter_value_labels()
-
-        min_scale = tk.Scale(slider_row, from_=-1, to=80, orient="horizontal", variable=self.multiplayer_browser_min_var, resolution=1, showvalue=False, command=on_filter_change, length=220, bg="#efe5d8", highlightthickness=0)
-        min_scale.pack(side="left", padx=(0, 8))
-        max_scale = tk.Scale(slider_row, from_=-1, to=80, orient="horizontal", variable=self.multiplayer_browser_max_var, resolution=1, showvalue=False, command=on_filter_change, length=220, bg="#efe5d8", highlightthickness=0)
-        max_scale.pack(side="left", padx=(8, 0))
-        min_scale.bind("<ButtonRelease-1>", lambda _event: self.request_public_rooms_snapshot())
-        max_scale.bind("<ButtonRelease-1>", lambda _event: self.request_public_rooms_snapshot())
-        min_scale.bind("<KeyRelease>", lambda _event: self.request_public_rooms_snapshot())
-        max_scale.bind("<KeyRelease>", lambda _event: self.request_public_rooms_snapshot())
-        refresh_filter_value_labels()
-
         labels_row = tk.Frame(filter_card, bg="#efe5d8")
         labels_row.pack(fill="x")
         tk.Label(labels_row, text=self.ui_label("minimum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").pack(side="left")
         tk.Label(labels_row, text=self.ui_label("maximum"), font=("Segoe UI", 10), bg="#efe5d8", fg="#6a6a6a").pack(side="right")
+        slider_canvas = tk.Canvas(filter_card, width=460, height=82, bg="#efe5d8", highlightthickness=0, bd=0)
+        slider_canvas.pack(fill="x", pady=(6, 0))
+        slider_left = 28
+        slider_right = 432
+        slider_y = 48
+        slider_max = 120
+        handle_radius = 11
+        handle_hit_radius = 18
+        dragging_handle = {"name": None}
 
-        list_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18)
+        def clamp_browser_values():
+            minimum = self.multiplayer_browser_min_var.get()
+            maximum = self.multiplayer_browser_max_var.get()
+            if minimum >= 0 and maximum >= 0 and minimum > maximum:
+                if dragging_handle["name"] == "min":
+                    self.multiplayer_browser_max_var.set(minimum)
+                else:
+                    self.multiplayer_browser_min_var.set(maximum)
+
+        def value_to_x(value):
+            if value < 0:
+                return slider_left
+            ratio = value / slider_max
+            return slider_left + ratio * (slider_right - slider_left)
+
+        def x_to_value(x_pos):
+            if x_pos <= slider_left + 6:
+                return -1
+            ratio = (x_pos - slider_left) / (slider_right - slider_left)
+            ratio = max(0.0, min(1.0, ratio))
+            return int(round(ratio * slider_max))
+
+        def hit_test_handle(x_pos, y_pos):
+            min_x = value_to_x(self.multiplayer_browser_min_var.get())
+            max_x = value_to_x(self.multiplayer_browser_max_var.get())
+            if abs(x_pos - min_x) <= handle_hit_radius and abs(y_pos - slider_y) <= handle_hit_radius:
+                return "min"
+            if abs(x_pos - max_x) <= handle_hit_radius and abs(y_pos - slider_y) <= handle_hit_radius:
+                return "max"
+            return None
+
+        def redraw_browser_slider():
+            clamp_browser_values()
+            slider_canvas.delete("all")
+            minimum = self.multiplayer_browser_min_var.get()
+            maximum = self.multiplayer_browser_max_var.get()
+            min_x = value_to_x(minimum)
+            max_x = value_to_x(maximum)
+            slider_canvas.create_text(slider_left, slider_y + 22, text="-1", fill="#6a6a6a", font=("Segoe UI", 9, "bold"))
+            slider_canvas.create_text(slider_right, slider_y + 22, text=str(slider_max), fill="#6a6a6a", font=("Segoe UI", 9, "bold"))
+            slider_canvas.create_line(slider_left, slider_y, slider_right, slider_y, fill="#b9aa96", width=8, capstyle="round")
+            slider_canvas.create_line(min_x, slider_y, max_x, slider_y, fill="#7d5a3c", width=8, capstyle="round")
+            slider_canvas.create_line(slider_left, slider_y - 10, slider_left, slider_y + 10, fill="#8f7e69", width=2)
+            slider_canvas.create_line(slider_right, slider_y - 10, slider_right, slider_y + 10, fill="#8f7e69", width=2)
+            if minimum < 0 or maximum < 0:
+                slider_canvas.create_text((slider_left + slider_right) / 2, 16, text=self.ui_label("unlimited"), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
+            else:
+                slider_canvas.create_text(min_x, 16, text=self.format_move_limit_display(minimum), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
+                slider_canvas.create_text(max_x, 16, text=self.format_move_limit_display(maximum), fill=TEXT_COLOR, font=("Segoe UI", 10, "bold"))
+            slider_canvas.create_oval(min_x - handle_radius, slider_y - handle_radius, min_x + handle_radius, slider_y + handle_radius, fill="#fff7ea", outline="#6a4428", width=2, tags="min_handle")
+            slider_canvas.create_oval(max_x - handle_radius, slider_y - handle_radius, max_x + handle_radius, slider_y + handle_radius, fill="#efe0c7", outline="#6a4428", width=2, tags="max_handle")
+            slider_canvas.create_text(min_x, slider_y, text="MIN", fill="#6a4428", font=("Segoe UI", 7, "bold"))
+            slider_canvas.create_text(max_x, slider_y, text="MAX", fill="#6a4428", font=("Segoe UI", 7, "bold"))
+            if self.multiplayer_browser_filter_summary_var is not None:
+                self.multiplayer_browser_filter_summary_var.set(self.browser_filter_summary())
+
+        def on_slider_press(event):
+            handle_name = hit_test_handle(event.x, event.y)
+            if handle_name is None:
+                return
+            dragging_handle["name"] = handle_name
+
+        def on_slider_drag(event):
+            if dragging_handle["name"] is None:
+                return
+            new_value = x_to_value(event.x)
+            if dragging_handle["name"] == "min":
+                current_max = self.multiplayer_browser_max_var.get()
+                if current_max >= 0 and new_value >= 0 and new_value > current_max:
+                    new_value = current_max
+                self.multiplayer_browser_min_var.set(new_value)
+            else:
+                current_min = self.multiplayer_browser_min_var.get()
+                if current_min >= 0 and new_value >= 0 and new_value < current_min:
+                    new_value = current_min
+                self.multiplayer_browser_max_var.set(new_value)
+            redraw_browser_slider()
+
+        def on_slider_release(_event):
+            if dragging_handle["name"] is None:
+                return
+            dragging_handle["name"] = None
+            redraw_browser_slider()
+            self.request_public_rooms_snapshot()
+
+        slider_canvas.bind("<Button-1>", on_slider_press)
+        slider_canvas.bind("<B1-Motion>", on_slider_drag)
+        slider_canvas.bind("<ButtonRelease-1>", on_slider_release)
+        redraw_browser_slider()
+
+        list_card = tk.Frame(frame, bg="#efe5d8", padx=18, pady=18, height=220)
         list_card.pack(anchor="center", fill="both", expand=True, pady=(14, 0))
+        list_card.pack_propagate(False)
         tk.Label(list_card, text=self.ui_label("browse_public_rooms"), font=("Segoe UI", 11, "bold"), bg="#efe5d8", fg=TEXT_COLOR).pack(anchor="w", pady=(0, 8))
         self.public_rooms_list_container = list_card
         self.render_public_room_rows()
@@ -3712,41 +3780,7 @@ class UnchessApp:
             self.pending_multiplayer_action = {"kind": "create", "is_public": is_public, "move_limit": move_limit}
             self.multiplayer_client.send({"type": "create_room", "is_public": is_public, "move_limit": move_limit})
         except OSError as exc:
-            messagebox.showerror("Multiplayer", f"Nem sikerult csatlakozni a szerverhez: {exc}")
-
-    def show_multiplayer_join_menu(self):
-        self.current_screen_refresh = self.show_multiplayer_join_menu
-        self.clear_view()
-        frame = self.create_scrollable_view()
-
-        top_bar = tk.Frame(frame, bg=BG_COLOR)
-        top_bar.pack(fill="x")
-        self.mount_settings_button(top_bar)
-
-        tk.Label(
-            frame,
-            text=self.ui_label("join"),
-            font=("Segoe UI", 26, "bold"),
-            bg=BG_COLOR,
-            fg=TEXT_COLOR,
-        ).pack(anchor="center", pady=(10, 8))
-
-        tk.Label(
-            frame,
-            text=self.ui_label("enter_room_code"),
-            font=("Segoe UI", 12),
-            bg=BG_COLOR,
-            fg="#5a5a5a",
-        ).pack(anchor="center", pady=(0, 18))
-
-        self.multiplayer_join_code_var = tk.StringVar()
-        entry = tk.Entry(frame, textvariable=self.multiplayer_join_code_var, font=("Consolas", 20), justify="center", width=10)
-        entry.pack(pady=(0, 18))
-        entry.focus_set()
-        self.set_global_return_action(self.multiplayer_join_room)
-
-        self.menu_button(frame, self.ui_label("join"), self.multiplayer_join_room).pack(anchor="center")
-        tk.Button(frame, text=self.ui_label("back"), command=self.show_multiplayer_placeholder, padx=12).pack(pady=(18, 0))
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.ui_label('server_connect_error')}: {exc}")
 
     def multiplayer_join_room(self, room_code=None):
         if self.pending_multiplayer_action and self.pending_multiplayer_action.get("kind") == "join":
@@ -4176,6 +4210,104 @@ class UnchessApp:
         self.multiplayer_is_host = False
         self.show_post_login_multiplayer_view()
 
+    def translate_server_message(self, message):
+        raw = str(message or "").strip()
+        if not raw:
+            return raw
+        exact_map = {
+            "You must be logged in for this action.": self.ui_label("msg_must_be_logged_in"),
+            "The username must be at least 3 characters long.": self.ui_label("msg_username_min_length"),
+            "The username may not contain spaces or other whitespace characters.": self.ui_label("msg_username_no_whitespace"),
+            "The username may only contain ASCII letters, numbers, underscores, and hyphens.": self.ui_label("msg_username_ascii_only"),
+            "The password must be at least 4 characters long.": self.ui_label("msg_password_min_length"),
+            "This username already exists.": self.ui_label("msg_username_exists"),
+            "Incorrect password.": self.ui_label("msg_incorrect_password"),
+            "No such account exists.": self.ui_label("msg_no_such_account"),
+            "The stored login has expired or is invalid.": self.ui_label("msg_stored_login_invalid"),
+            "The stored login can no longer be used.": self.ui_label("msg_stored_login_unusable"),
+            "Both password fields are required.": self.ui_label("msg_both_passwords_required"),
+            "The two passwords do not match.": self.ui_label("msg_passwords_do_not_match"),
+            "This account no longer exists.": self.ui_label("msg_account_no_longer_exists"),
+            "Enter a username.": self.ui_label("msg_enter_username"),
+            "The new password is too short.": self.ui_label("msg_new_password_too_short"),
+            "The console account password cannot be changed here.": self.ui_label("msg_console_password_cannot_change"),
+            "The console account cannot be deleted here.": self.ui_label("msg_console_cannot_delete"),
+            "The console account balance cannot be cleared.": self.ui_label("msg_console_balance_cannot_clear"),
+            "The console account admin status cannot be changed.": self.ui_label("msg_console_admin_cannot_change"),
+            "The console account cannot be banned.": self.ui_label("msg_console_cannot_ban"),
+            "The console account report permission cannot be changed.": self.ui_label("msg_console_report_cannot_change"),
+            "No such user.": self.ui_label("msg_no_such_user"),
+            "Room not found": self.ui_label("msg_room_not_found"),
+            "Room already full": self.ui_label("msg_room_already_full"),
+            "You are already assigned to a room.": self.ui_label("already_assigned_to_room"),
+            "Leave spectator mode before creating a room.": self.ui_label("msg_leave_spectator_before_create"),
+            "Leave spectator mode before joining a room.": self.ui_label("msg_leave_spectator_before_join"),
+            "No active room found.": self.ui_label("msg_no_active_room"),
+            "Only the room host can change these settings.": self.ui_label("msg_only_host_change_room"),
+            "Room settings can no longer be changed.": self.ui_label("msg_room_settings_locked"),
+            "Only the host can choose roles": self.ui_label("msg_only_host_choose_roles"),
+            "Cannot choose role before guest joins": self.ui_label("msg_guest_not_joined"),
+            "The match has already started.": self.ui_label("msg_match_already_started"),
+            "Game has not started": self.ui_label("msg_game_not_started"),
+            "The match has already ended.": self.ui_label("msg_match_already_ended"),
+            "Not your turn": self.ui_label("msg_not_your_turn"),
+            "Illegal move.": self.ui_label("msg_illegal_move"),
+            "Your report permission has been revoked.": self.ui_label("msg_report_permission_revoked"),
+            "There is no active multiplayer match to report.": self.ui_label("msg_no_active_match_to_report"),
+            "There is no player to report.": self.ui_label("msg_no_player_to_report"),
+            "You have already reported your opponent once in this match.": self.ui_label("report_already_used_this_match"),
+            "The target player is not authenticated.": self.ui_label("msg_target_not_authenticated"),
+            "There is no active multiplayer match to ban from.": self.ui_label("msg_no_active_match_to_ban"),
+            "There is no player to ban.": self.ui_label("msg_no_player_to_ban"),
+            "Admin privileges are required for this action.": self.ui_label("msg_admin_required"),
+            "The room closed.": self.ui_label("msg_room_closed"),
+            "Server is shutting down. New connections are temporarily blocked.": self.ui_label("msg_server_shutting_down"),
+            "The planned server shutdown was cancelled.": self.ui_label("msg_server_shutdown_cancelled"),
+            "This account was signed in from another client.": self.ui_label("msg_signed_in_elsewhere"),
+            "Your account was deleted from another session.": self.ui_label("msg_account_deleted_elsewhere"),
+            "Opponent report permission updated.": self.ui_label("msg_opponent_report_permission_updated"),
+        }
+        if raw in exact_map:
+            return exact_map[raw]
+        if raw.startswith("Unknown message type: "):
+            return f"{self.ui_label('msg_unknown_message_type_prefix')}{raw.split(': ', 1)[1]}"
+        if raw.startswith("Password reset completed for "):
+            return self.ui_label("msg_password_reset_completed_for").format(username=raw.removeprefix("Password reset completed for ").rstrip("."))
+        if raw.startswith("Account deleted: "):
+            return self.ui_label("msg_account_deleted_for").format(username=raw.removeprefix("Account deleted: ").rstrip("."))
+        if raw.startswith("Balance cleared for "):
+            return self.ui_label("msg_balance_cleared_for").format(username=raw.removeprefix("Balance cleared for ").rstrip("."))
+        if raw.startswith("Admin status updated for "):
+            return self.ui_label("msg_admin_status_updated_for").format(username=raw.removeprefix("Admin status updated for ").rstrip("."))
+        if raw.startswith("Banned "):
+            return self.ui_label("msg_banned_user").format(username=raw.removeprefix("Banned ").rstrip("."))
+        if raw.startswith("Unbanned "):
+            return self.ui_label("msg_unbanned_user").format(username=raw.removeprefix("Unbanned ").rstrip("."))
+        if raw.startswith("Report permission granted to "):
+            return self.ui_label("msg_report_permission_granted_to").format(username=raw.removeprefix("Report permission granted to ").rstrip("."))
+        if raw.startswith("Report permission removed from "):
+            return self.ui_label("msg_report_permission_removed_from").format(username=raw.removeprefix("Report permission removed from ").rstrip("."))
+        return raw
+
+    def resolve_server_message(self, event, fallback_key=None):
+        if isinstance(event, dict):
+            message_key = event.get("message_key")
+            message_args = event.get("message_args") or {}
+            if message_key:
+                template = self.ui_label(message_key)
+                if isinstance(message_args, dict) and message_args:
+                    try:
+                        return template.format(**message_args)
+                    except (KeyError, ValueError):
+                        return template
+                return template
+            raw = event.get("message")
+            if raw:
+                return self.translate_server_message(raw)
+        if fallback_key:
+            return self.ui_label(fallback_key)
+        return ""
+
     def start_singleplayer(self):
         self.show_match_options(
             self.ui_label("singleplayer"),
@@ -4299,10 +4431,10 @@ class UnchessApp:
 
     def handle_network_event(self, event):
         event_type = event.get("type")
-        if event_type == "hello_ack":
+        if event_type == "pong":
             return
         if event_type == "network_error":
-            messagebox.showerror("Multiplayer", event.get("message", "Halozati hiba"))
+            messagebox.showerror(self.ui_label("multiplayer"), self.resolve_server_message(event, "network_error_generic"))
             self.close_multiplayer_client()
             return
         if event_type == "disconnected":
@@ -4310,17 +4442,11 @@ class UnchessApp:
                 self.ignore_next_disconnect = False
                 return
             if self.multiplayer_client is not None:
-                messagebox.showwarning("Multiplayer", "A kapcsolat megszakadt.")
+                messagebox.showwarning(self.ui_label("multiplayer"), self.ui_label("connection_lost"))
             self.close_multiplayer_client()
             return
         if event_type == "error":
-            raw_message = event.get("message", "Server error")
-            if raw_message == "You have already reported your opponent once in this match.":
-                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("report_already_used_this_match"))
-            elif raw_message == "You are already assigned to a room.":
-                messagebox.showerror(self.ui_label("multiplayer"), self.ui_label("already_assigned_to_room"))
-            else:
-                messagebox.showerror(self.ui_label("multiplayer"), raw_message)
+            messagebox.showerror(self.ui_label("multiplayer"), self.resolve_server_message(event, "network_error_generic"))
             if self.pending_multiplayer_action and self.pending_multiplayer_action["kind"] == "join":
                 self.show_multiplayer_join_menu()
             elif self.pending_multiplayer_action and self.pending_multiplayer_action["kind"] == "create":
@@ -4332,7 +4458,7 @@ class UnchessApp:
             if pending_kind in {"restore", "profile_restore", "local_result", "delete_account"}:
                 self.reset_account_state()
             self.pending_multiplayer_action = None
-            messagebox.showerror("Multiplayer", event.get("message", "Hitelesítési hiba"))
+            messagebox.showerror(self.ui_label("multiplayer"), self.resolve_server_message(event, "auth_error_generic"))
             if pending_kind == "restore" and self.auth_target_screen == "main" and not self.suppress_auth_prompt:
                 self.show_startup_account_prompt()
             return
@@ -4340,7 +4466,7 @@ class UnchessApp:
             self.user_name = ""
             self.auth_username_var = tk.StringVar(value="")
             self.auth_password_var = tk.StringVar()
-            messagebox.showinfo("Multiplayer", self.ui_label("register_success_return_login"))
+            messagebox.showinfo(self.ui_label("multiplayer"), self.ui_label("register_success_return_login"))
             if self.auth_target_screen == "multiplayer":
                 self.show_multiplayer_auth_menu("login")
             else:
@@ -4380,18 +4506,18 @@ class UnchessApp:
             deleted_username = event.get("username", self.user_name)
             self.reset_account_state()
             self.close_multiplayer_client()
-            messagebox.showinfo(self.ui_label("multiplayer"), f"{self.ui_label('delete_account_success')}: {deleted_username}")
+            messagebox.showinfo(self.ui_label("multiplayer"), self.ui_label("delete_account_success_for").format(username=deleted_username))
             self.show_startup_account_prompt()
             return
         if event_type == "force_logout":
             self.reset_account_state()
             self.close_multiplayer_client()
-            messagebox.showwarning("Multiplayer", event.get("message", "Kijelentkeztetve."))
+            messagebox.showwarning(self.ui_label("multiplayer"), self.resolve_server_message(event, "logged_out"))
             self.show_startup_account_prompt()
             return
         if event_type == "banned":
             self.reset_account_state()
-            messagebox.showerror("Multiplayer", f"{event.get('message', 'A fiók tiltva van.')}\nVitatás: {event.get('appeal_email', 'appeal@example.com')}")
+            messagebox.showerror(self.ui_label("multiplayer"), f"{self.resolve_server_message(event, 'account_banned')}\n{self.ui_label('appeal_label')}: {event.get('appeal_email', 'appeal@example.com')}")
             self.show_startup_account_prompt()
             return
         if event_type == "profile_snapshot":
@@ -4400,23 +4526,23 @@ class UnchessApp:
         if event_type == "local_result_saved":
             return
         if event_type == "report_success":
-            messagebox.showinfo("Multiplayer", f"Report elküldve: {event.get('reported_username', 'ismeretlen')}")
+            messagebox.showinfo(self.ui_label("multiplayer"), self.ui_label("report_sent_for").format(username=event.get("reported_username", self.ui_label("unknown_player"))))
             return
         if event_type == "ban_success":
-            messagebox.showinfo("Multiplayer", f"Játékos tiltva: {event.get('banned_username', 'ismeretlen')}")
+            messagebox.showinfo(self.ui_label("multiplayer"), self.ui_label("player_banned_for").format(username=event.get("banned_username", self.ui_label("unknown_player"))))
             return
         if event_type == "admin_action_success":
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config.get("mode") == "multiplayer":
                 if "can_report" in event:
                     self.current_view.set_opponent_report_permission_state(bool(event.get("can_report")))
-            messagebox.showinfo(self.ui_label("multiplayer"), event.get("message", self.ui_label("admin_action_done")))
+            messagebox.showinfo(self.ui_label("multiplayer"), self.resolve_server_message(event, "admin_action_done"))
             return
         if event_type == "console_action_success":
             if self.console_new_password_var is not None:
                 self.console_new_password_var.set("")
             self.request_console_snapshot()
             self.show_console_player_list()
-            messagebox.showinfo(self.ui_label("console_title"), event.get("message", self.ui_label("console_action_done")))
+            messagebox.showinfo(self.ui_label("console_title"), self.resolve_server_message(event, "console_action_done"))
             return
         if event_type == "console_snapshot":
             self.render_console_snapshot(event.get("users", []))
@@ -4442,24 +4568,24 @@ class UnchessApp:
             return
         if event_type == "spectate_ended":
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "spectator":
-                message = event.get("message", self.ui_label("spectate_ended"))
+                message = self.resolve_server_message(event, "spectate_ended")
                 messagebox.showinfo(self.ui_label("active_rooms"), message)
                 self.show_admin_rooms_menu(fetch=True)
             return
         if event_type == "server_shutdown":
-            message = event.get("message", "A szerver leáll.")
             immediate = bool(event.get("immediate"))
+            message = self.resolve_server_message(event, "msg_server_shutting_down")
             seconds_remaining = int(event.get("seconds_remaining", 0) or 0)
             if immediate or seconds_remaining <= 0:
-                messagebox.showwarning("Multiplayer", message)
+                messagebox.showwarning(self.ui_label("multiplayer"), message)
                 self.close_multiplayer_client()
                 self.show_main_menu()
                 return
             minutes = max(1, seconds_remaining // 60)
-            messagebox.showwarning("Multiplayer", f"{message}\nHátralévő idő: ~{minutes} perc")
+            messagebox.showwarning(self.ui_label("multiplayer"), self.ui_label("server_shutdown_with_minutes").format(message=message, minutes=minutes))
             return
         if event_type == "server_shutdown_cancelled":
-            messagebox.showinfo("Multiplayer", event.get("message", "A tervezett szerverleállás megszakítva."))
+            messagebox.showinfo(self.ui_label("multiplayer"), self.resolve_server_message(event, "msg_server_shutdown_cancelled"))
             return
         if event_type == "left_room":
             self.multiplayer_room = None
@@ -4525,21 +4651,21 @@ class UnchessApp:
             self.multiplayer_room = room
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "spectator":
                 leaver = event.get("player_name", "A jÃ¡tÃ©kos")
-                messagebox.showinfo(self.ui_label("active_rooms"), f"{leaver} kilÃ©pett. A spectate leÃ¡llt.")
+                messagebox.showinfo(self.ui_label("active_rooms"), self.ui_label("spectate_player_left").format(username=leaver))
                 self.show_admin_rooms_menu(fetch=True)
                 return
             if isinstance(self.current_view, UnchessGame) and self.current_view.mode_config["mode"] == "multiplayer":
-                leaver = event.get("player_name", "Az ellenfél")
+                leaver = event.get("player_name", self.ui_label("unknown_player"))
                 if event.get("game_was_started"):
-                    messagebox.showinfo("Multiplayer", f"{leaver} kilépett. Nyertél.")
+                    messagebox.showinfo(self.ui_label("multiplayer"), self.ui_label("opponent_left_you_win").format(username=leaver))
                 else:
-                    messagebox.showinfo("Multiplayer", f"{leaver} kilépett. A szoba bezárult.")
+                    messagebox.showinfo(self.ui_label("multiplayer"), self.ui_label("opponent_left_room_closed").format(username=leaver))
                 self.multiplayer_room = None
                 self.multiplayer_is_host = False
                 self.show_post_login_multiplayer_view()
                 return
             if self.multiplayer_status_var is not None:
-                self.multiplayer_status_var.set("Az ellenfél kilépett.")
+                self.multiplayer_status_var.set(self.ui_label("opponent_left_status"))
             self.multiplayer_room = None
             self.multiplayer_is_host = False
             self.show_post_login_multiplayer_view()
@@ -5405,6 +5531,91 @@ class UnchessApp:
                 "spectate_target": "Ban celpont",
                 "spectate_ended": "A spectate munkamenet befejezodott.",
                 "reason": "Ok",
+                "game_over_title": "Jatek vege",
+                "network_error_generic": "Halozati hiba.",
+                "connection_lost": "A kapcsolat megszakadt.",
+                "auth_error_generic": "Hitelesitesi hiba.",
+                "logged_out": "Kijelentkeztetve.",
+                "account_banned": "A fiok tiltva van.",
+                "appeal_label": "Vitas",
+                "unknown_player": "ismeretlen",
+                "report_sent_for": "Report elkuldve: {username}",
+                "player_banned_for": "Jatekos tiltva: {username}",
+                "delete_account_success_for": "Fiok torolve: {username}",
+                "server_shutdown_with_minutes": "{message}\nHatralewo ido: ~{minutes} perc",
+                "spectate_player_left": "{username} kilepett. A spectate leallt.",
+                "opponent_left_you_win": "{username} kilepett. Nyertel.",
+                "opponent_left_room_closed": "{username} kilepett. A szoba bezarult.",
+                "opponent_left_status": "Az ellenfel kilepett.",
+                "msg_must_be_logged_in": "Ehhez a muvelethez be kell jelentkezned.",
+                "msg_username_min_length": "A felhasznalonev legalabb 3 karakter legyen.",
+                "msg_username_no_whitespace": "A felhasznalonev nem tartalmazhat szokozzt vagy mas whitespace karaktert.",
+                "msg_username_ascii_only": "A felhasznalonev csak ASCII betuket, szamokat, alahuzast es kotojelet tartalmazhat.",
+                "msg_password_min_length": "A jelszonak legalabb 4 karakteresnek kell lennie.",
+                "msg_username_exists": "Ez a felhasznalonev mar letezik.",
+                "msg_incorrect_password": "Hibas jelszo.",
+                "msg_no_such_account": "Nincs ilyen fiok.",
+                "msg_stored_login_invalid": "A tarolt belepes lejart vagy ervenytelen.",
+                "msg_stored_login_unusable": "A tarolt belepes mar nem hasznalhato.",
+                "msg_both_passwords_required": "Mindket jelszomezo kitoltese kotelezo.",
+                "msg_passwords_do_not_match": "A ket jelszo nem egyezik.",
+                "msg_account_no_longer_exists": "Ez a fiok mar nem letezik.",
+                "msg_enter_username": "Adj meg egy felhasznalonevet.",
+                "msg_new_password_too_short": "Az uj jelszo tul rovid.",
+                "msg_console_password_cannot_change": "A console fiok jelszava itt nem modosit-hato.",
+                "msg_console_cannot_delete": "A console fiok itt nem torolheto.",
+                "msg_console_balance_cannot_clear": "A console fiok pontjai itt nem torolhetok.",
+                "msg_console_admin_cannot_change": "A console fiok admin statusza itt nem valtoztathato.",
+                "msg_console_cannot_ban": "A console fiok nem tilthato.",
+                "msg_console_report_cannot_change": "A console fiok report joga itt nem valtoztathato.",
+                "msg_no_such_user": "Nincs ilyen felhasznalo.",
+                "msg_room_not_found": "A szoba nem talalhato.",
+                "msg_room_already_full": "A szoba mar tele van.",
+                "msg_leave_spectator_before_create": "Lepj ki a spectate modbol uj szoba letrehozasa elott.",
+                "msg_leave_spectator_before_join": "Lepj ki a spectate modbol csatlakozas elott.",
+                "msg_no_active_room": "Nincs aktiv szoba.",
+                "msg_only_host_change_room": "Csak a host modosithatja ezeket a beallitasokat.",
+                "msg_room_settings_locked": "A szoba beallitasai mar nem modosithatok.",
+                "msg_only_host_choose_roles": "Csak a host valaszthat szerepet.",
+                "msg_guest_not_joined": "Nem lehet szerepet valasztani, amig nem csatlakozott az ellenfel.",
+                "msg_match_already_started": "A meccs mar elindult.",
+                "msg_game_not_started": "A jatek meg nem indult el.",
+                "msg_match_already_ended": "A meccs mar veget ert.",
+                "msg_not_your_turn": "Most nem te kovetkezel.",
+                "msg_illegal_move": "Szabalytalan lepes.",
+                "msg_report_permission_revoked": "A report jogod el lett veve.",
+                "msg_no_active_match_to_report": "Nincs aktiv multiplayer meccs, amit reportolhatnal.",
+                "msg_no_player_to_report": "Nincs reportolhato jatekos.",
+                "msg_target_not_authenticated": "A celzott jatekos nincs hitelesitve.",
+                "msg_no_active_match_to_ban": "Nincs aktiv multiplayer meccs, amiben bant adhatsz.",
+                "msg_no_player_to_ban": "Nincs tiltando jatekos.",
+                "msg_admin_required": "Ehhez a muvelethez admin jog kell.",
+                "msg_room_closed": "A szoba bezarult.",
+                "msg_server_shutting_down": "A szerver leall. Az uj kapcsolatok ideiglenesen blokkolva vannak.",
+                "msg_server_shutdown_now": "A szerver most leall.",
+                "msg_server_closed_immediately": "A szerver azonnal bezarult.",
+                "msg_server_not_accepting_players": "A szerver leall. Jelenleg nem fogad uj jatekosokat.",
+                "msg_server_shutdown_cancelled": "A tervezett szerverleallas megszakitva.",
+                "msg_signed_in_elsewhere": "Ezzel a fiokkal egy masik kliens lepett be.",
+                "msg_account_deleted_elsewhere": "A fiokodat egy masik sessionbol toroltek.",
+                "msg_opponent_report_permission_updated": "Az ellenfeled report joga frissitve lett.",
+                "msg_only_active_rooms_spectatable": "Csak aktiv szobakat lehet spectatelni.",
+                "msg_must_spectate_room_first": "Elobb spectatelned kell a szobat.",
+                "msg_invalid_target": "Ervenytelen celpont.",
+                "msg_no_opponent_to_modify": "Nincs modosit-hato ellenfel.",
+                "msg_server_ready": "Unchess szerver keszen all.",
+                "msg_invalid_json": "Ervenytelen JSON.",
+                "msg_account_banned_with_reason": "A fiok tiltva van. Ok: {reason}",
+                "msg_unknown_message_type_prefix": "Ismeretlen uzenettipus: ",
+                "msg_unknown_message_type": "Ismeretlen uzenettipus: {message_type}",
+                "msg_password_reset_completed_for": "Jelszo reset kesz: {username}",
+                "msg_account_deleted_for": "Fiok torolve: {username}",
+                "msg_balance_cleared_for": "Pontok torolve: {username}",
+                "msg_admin_status_updated_for": "Admin statusz frissitve: {username}",
+                "msg_banned_user": "Tiltva: {username}",
+                "msg_unbanned_user": "Tiltas feloldva: {username}",
+                "msg_report_permission_granted_to": "Report jog megadva: {username}",
+                "msg_report_permission_removed_from": "Report jog elveve: {username}",
             },
             "en": {
                 "choose_mode": "Choose game mode",
@@ -5587,6 +5798,91 @@ class UnchessApp:
                 "spectate_target": "Ban target",
                 "spectate_ended": "The spectator session has ended.",
                 "reason": "Reason",
+                "game_over_title": "Game over",
+                "network_error_generic": "Network error.",
+                "connection_lost": "The connection was lost.",
+                "auth_error_generic": "Authentication error.",
+                "logged_out": "Logged out.",
+                "account_banned": "This account is banned.",
+                "appeal_label": "Appeal",
+                "unknown_player": "unknown",
+                "report_sent_for": "Report sent: {username}",
+                "player_banned_for": "Player banned: {username}",
+                "delete_account_success_for": "Account deleted: {username}",
+                "server_shutdown_with_minutes": "{message}\nTime remaining: ~{minutes} minute(s)",
+                "spectate_player_left": "{username} left. Spectating ended.",
+                "opponent_left_you_win": "{username} left. You win.",
+                "opponent_left_room_closed": "{username} left. The room closed.",
+                "opponent_left_status": "The opponent left.",
+                "msg_must_be_logged_in": "You must be logged in for this action.",
+                "msg_username_min_length": "The username must be at least 3 characters long.",
+                "msg_username_no_whitespace": "The username may not contain spaces or other whitespace characters.",
+                "msg_username_ascii_only": "The username may only contain ASCII letters, numbers, underscores, and hyphens.",
+                "msg_password_min_length": "The password must be at least 4 characters long.",
+                "msg_username_exists": "This username already exists.",
+                "msg_incorrect_password": "Incorrect password.",
+                "msg_no_such_account": "No such account exists.",
+                "msg_stored_login_invalid": "The stored login has expired or is invalid.",
+                "msg_stored_login_unusable": "The stored login can no longer be used.",
+                "msg_both_passwords_required": "Both password fields are required.",
+                "msg_passwords_do_not_match": "The two passwords do not match.",
+                "msg_account_no_longer_exists": "This account no longer exists.",
+                "msg_enter_username": "Enter a username.",
+                "msg_new_password_too_short": "The new password is too short.",
+                "msg_console_password_cannot_change": "The console account password cannot be changed here.",
+                "msg_console_cannot_delete": "The console account cannot be deleted here.",
+                "msg_console_balance_cannot_clear": "The console account balance cannot be cleared here.",
+                "msg_console_admin_cannot_change": "The console account admin status cannot be changed here.",
+                "msg_console_cannot_ban": "The console account cannot be banned.",
+                "msg_console_report_cannot_change": "The console account report permission cannot be changed here.",
+                "msg_no_such_user": "No such user.",
+                "msg_room_not_found": "Room not found.",
+                "msg_room_already_full": "Room already full.",
+                "msg_leave_spectator_before_create": "Leave spectator mode before creating a room.",
+                "msg_leave_spectator_before_join": "Leave spectator mode before joining a room.",
+                "msg_no_active_room": "No active room found.",
+                "msg_only_host_change_room": "Only the room host can change these settings.",
+                "msg_room_settings_locked": "Room settings can no longer be changed.",
+                "msg_only_host_choose_roles": "Only the host can choose roles.",
+                "msg_guest_not_joined": "Cannot choose a role before the guest joins.",
+                "msg_match_already_started": "The match has already started.",
+                "msg_game_not_started": "The game has not started.",
+                "msg_match_already_ended": "The match has already ended.",
+                "msg_not_your_turn": "It is not your turn.",
+                "msg_illegal_move": "Illegal move.",
+                "msg_report_permission_revoked": "Your report permission has been revoked.",
+                "msg_no_active_match_to_report": "There is no active multiplayer match to report.",
+                "msg_no_player_to_report": "There is no player to report.",
+                "msg_target_not_authenticated": "The target player is not authenticated.",
+                "msg_no_active_match_to_ban": "There is no active multiplayer match to ban from.",
+                "msg_no_player_to_ban": "There is no player to ban.",
+                "msg_admin_required": "Admin privileges are required for this action.",
+                "msg_room_closed": "The room closed.",
+                "msg_server_shutting_down": "Server is shutting down. New connections are temporarily blocked.",
+                "msg_server_shutdown_now": "Server is shutting down now.",
+                "msg_server_closed_immediately": "Server closed immediately.",
+                "msg_server_not_accepting_players": "Server is shutting down. New players are not being accepted right now.",
+                "msg_server_shutdown_cancelled": "The planned server shutdown was cancelled.",
+                "msg_signed_in_elsewhere": "This account was signed in from another client.",
+                "msg_account_deleted_elsewhere": "Your account was deleted from another session.",
+                "msg_opponent_report_permission_updated": "Opponent report permission updated.",
+                "msg_only_active_rooms_spectatable": "Only active rooms can be spectated.",
+                "msg_must_spectate_room_first": "You must spectate the room first.",
+                "msg_invalid_target": "Invalid target.",
+                "msg_no_opponent_to_modify": "There is no opponent to modify.",
+                "msg_server_ready": "Unchess server ready.",
+                "msg_invalid_json": "Invalid JSON.",
+                "msg_account_banned_with_reason": "This account is banned. Reason: {reason}",
+                "msg_unknown_message_type_prefix": "Unknown message type: ",
+                "msg_unknown_message_type": "Unknown message type: {message_type}",
+                "msg_password_reset_completed_for": "Password reset completed for {username}.",
+                "msg_account_deleted_for": "Account deleted: {username}.",
+                "msg_balance_cleared_for": "Balance cleared for {username}.",
+                "msg_admin_status_updated_for": "Admin status updated for {username}.",
+                "msg_banned_user": "Banned {username}.",
+                "msg_unbanned_user": "Unbanned {username}.",
+                "msg_report_permission_granted_to": "Report permission granted to {username}.",
+                "msg_report_permission_removed_from": "Report permission removed from {username}.",
             },
         }
         lang = self.language if self.language in labels else "en"
