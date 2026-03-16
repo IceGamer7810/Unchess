@@ -168,7 +168,7 @@ def load_client_settings():
         "suppress_auth_prompt": False,
         "auto_role_policy": "ask",
         "bot_tempo": "normal",
-        "move_limit": -1,
+        "move_limit": 120,
         "language": detect_default_language(),
         "profile_stats": default_profile_stats(),
     }
@@ -4137,7 +4137,7 @@ class UnchessApp:
             move_scale = tk.Scale(
                 host_card,
                 from_=-1,
-                to=80,
+                to=120,
                 orient="horizontal",
                 variable=self.multiplayer_create_move_limit_var,
                 resolution=1,
@@ -4206,7 +4206,12 @@ class UnchessApp:
         self.submit_waiting_room_settings()
 
     def submit_waiting_room_settings(self):
-        if not self.multiplayer_is_host or self.multiplayer_client is None or self.multiplayer_room is None:
+        if (
+            not self.multiplayer_is_host
+            or self.multiplayer_client is None
+            or not self.multiplayer_client.connected
+            or self.multiplayer_room is None
+        ):
             return
         try:
             move_limit = int(self.multiplayer_create_move_limit_var.get() if self.multiplayer_create_move_limit_var is not None else self.default_move_limit)
