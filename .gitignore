@@ -1,0 +1,24 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+build/
+
+# Generated Flutter metadata
+.metadata
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+Desktop.ini
+
+# Windows build outputs
+windows/flutter/ephemeral/
+windows/flutter/generated_plugin_registrant.*
+windows/runner/Debug/
+windows/runner/Release/
+windows/runner/x64/
